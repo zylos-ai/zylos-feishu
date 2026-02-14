@@ -1,5 +1,5 @@
 /**
- * Lark Document Functions
+ * Feishu Document Functions
  */
 
 import { getClient } from './client.js';

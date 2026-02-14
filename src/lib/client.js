@@ -1,5 +1,5 @@
 /**
- * Lark SDK Client
+ * Feishu SDK Client
  * Handles authentication and provides client instance
  *
  * Credentials from environment variables:
@@ -13,7 +13,7 @@ import { getCredentials } from './config.js';
 let clientInstance = null;
 
 /**
- * Create and return Lark client instance
+ * Create and return Feishu client instance
  */
 export function getClient() {
   if (clientInstance) {

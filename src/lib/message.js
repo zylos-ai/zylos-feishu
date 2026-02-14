@@ -1,5 +1,5 @@
 /**
- * Lark Messaging Functions
+ * Feishu Messaging Functions
  */
 
 import fs from 'fs';
@@ -132,7 +132,7 @@ function parseMessageContent(content, msgType) {
 }
 
 /**
- * Download image from Lark message
+ * Download image from Feishu message
  */
 export async function downloadImage(messageId, imageKey, savePath) {
   try {
@@ -159,7 +159,7 @@ export async function downloadImage(messageId, imageKey, savePath) {
 }
 
 /**
- * Upload image to Lark
+ * Upload image to Feishu
  */
 export async function uploadImage(imagePath, imageType = 'message') {
   try {
@@ -218,7 +218,7 @@ export async function sendImage(receiveId, imageKey, receiveIdType = 'chat_id') 
 }
 
 /**
- * Download file from Lark message
+ * Download file from Feishu message
  */
 export async function downloadFile(messageId, fileKey, savePath) {
   try {
@@ -245,7 +245,7 @@ export async function downloadFile(messageId, fileKey, savePath) {
 }
 
 /**
- * Upload file to Lark
+ * Upload file to Feishu
  */
 export async function uploadFile(filePath, fileType = 'stream') {
   const client = getClient();

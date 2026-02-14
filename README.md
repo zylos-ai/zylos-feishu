@@ -2,10 +2,10 @@
   <img src="./assets/logo.png" alt="Zylos" height="120">
 </p>
 
-<h1 align="center">zylos-lark</h1>
+<h1 align="center">zylos-feishu</h1>
 
 <p align="center">
-  Lark/Feishu messaging component for <a href="https://github.com/zylos-ai/zylos-core">Zylos</a> agents.
+  飞书 (Feishu) messaging component for <a href="https://github.com/zylos-ai/zylos-core">Zylos</a> agents.
 </p>
 
 <p align="center">
@@ -23,24 +23,24 @@
 
 ---
 
-- **Talk through Lark** — your AI agent speaks Lark, both private chats and group conversations
+- **Talk through Feishu** — your AI agent speaks Feishu, both private chats and group conversations
 - **Smart group monitoring** — automatically follow designated group discussions, no @mention needed
 - **Zero-config start** — first message auto-binds you as admin, no setup wizards
-- **Rich Lark integration** — documents, spreadsheets, calendar — not just messaging
+- **Rich Feishu integration** — documents, spreadsheets, calendar — not just messaging
 
 ## Getting Started
 
 Tell your Zylos agent:
 
-> "Install the lark component"
+> "Install the feishu component"
 
 Or use the CLI:
 
 ```bash
-zylos add lark
+zylos add feishu
 ```
 
-Zylos will guide you through the setup, including configuring your Lark app credentials. Once installed, message your bot on Lark — the first user to interact becomes the admin.
+Zylos will guide you through the setup, including configuring your Feishu app credentials. Once installed, message your bot on Feishu — the first user to interact becomes the admin.
 
 ## Managing the Bot
 
@@ -48,18 +48,18 @@ Just tell your Zylos agent what you need:
 
 | Task | Example |
 |------|---------|
-| Add user to whitelist | "Add user xxx to lark whitelist" |
+| Add user to whitelist | "Add user xxx to feishu whitelist" |
 | Enable smart group | "Make this group a smart group" |
-| Check status | "Show lark bot status" |
-| Restart bot | "Restart lark bot" |
-| Upgrade | "Upgrade lark component" |
-| Uninstall | "Uninstall lark component" |
+| Check status | "Show feishu bot status" |
+| Restart bot | "Restart feishu bot" |
+| Upgrade | "Upgrade feishu component" |
+| Uninstall | "Uninstall feishu component" |
 
 Or manage via CLI:
 
 ```bash
-zylos upgrade lark
-zylos uninstall lark
+zylos upgrade feishu
+zylos uninstall feishu
 ```
 
 ## Group Chat Behavior

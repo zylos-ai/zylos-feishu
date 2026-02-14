@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * Post-install hook for zylos-lark
+ * Post-install hook for zylos-feishu
  *
  * Called during installation (both terminal and JSON/Claude modes).
  * Terminal mode (stdio: inherit): runs interactive prompts for optional config.
  * JSON mode (stdio: pipe): runs silently, skips interactive prompts.
  *
- * This hook handles lark-specific setup:
+ * This hook handles feishu-specific setup:
  * - Create subdirectories (logs, media)
  * - Create default config.json
  * - Check for environment variables (informational)
@@ -22,7 +22,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const HOME = process.env.HOME;
-const DATA_DIR = path.join(HOME, 'zylos/components/lark');
+const DATA_DIR = path.join(HOME, 'zylos/components/feishu');
 const ENV_FILE = path.join(HOME, 'zylos/.env');
 
 // Minimal initial config - full defaults are in src/lib/config.js
@@ -46,7 +46,7 @@ function ask(question) {
   });
 }
 
-console.log('[post-install] Running lark-specific setup...\n');
+console.log('[post-install] Running feishu-specific setup...\n');
 
 // 1. Create subdirectories
 console.log('Creating subdirectories...');
@@ -72,11 +72,11 @@ try {
   envContent = fs.readFileSync(ENV_FILE, 'utf8');
 } catch (e) {}
 
-const hasAppId = envContent.includes('LARK_APP_ID');
-const hasAppSecret = envContent.includes('LARK_APP_SECRET');
+const hasAppId = envContent.includes('FEISHU_APP_ID');
+const hasAppSecret = envContent.includes('FEISHU_APP_SECRET');
 
 if (!hasAppId || !hasAppSecret) {
-  console.log('  LARK_APP_ID and/or LARK_APP_SECRET not yet in .env.');
+  console.log('  FEISHU_APP_ID and/or FEISHU_APP_SECRET not yet in .env.');
 } else {
   console.log('  Credentials found.');
 }
@@ -110,22 +110,21 @@ if (isInteractive) {
 console.log('\n[post-install] Complete!');
 
 // Read domain from zylos config for webhook URL display
-let webhookUrl = 'https://<your-domain>/lark/webhook';
+let webhookUrl = 'https://<your-domain>/feishu/webhook';
 try {
   const zylosConfig = JSON.parse(fs.readFileSync(path.join(HOME, 'zylos/.zylos/config.json'), 'utf8'));
   if (zylosConfig.domain) {
     const protocol = zylosConfig.protocol || 'https';
-    webhookUrl = `${protocol}://${zylosConfig.domain}/lark/webhook`;
+    webhookUrl = `${protocol}://${zylosConfig.domain}/feishu/webhook`;
   }
 } catch (e) {}
 
 console.log('\n========================================');
-console.log('  Feishu/Lark Setup — Remaining Steps');
+console.log('  Feishu (飞书) Setup — Remaining Steps');
 console.log('========================================');
 console.log('');
 console.log('After the service starts, go to the developer console:');
 console.log('  - Feishu: open.feishu.cn/app');
-console.log('  - Lark:   open.larksuite.com/app');
 console.log('');
 console.log('1. Enable "Bot" capability');
 console.log('2. Subscribe to event: im.message.receive_v1');

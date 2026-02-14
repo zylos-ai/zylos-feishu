@@ -1,9 +1,9 @@
-# zylos-lark Design Document
+# zylos-feishu Design Document
 
 **Version**: v1.0
-**Date**: 2026-02-08
+**Date**: 2026-02-14
 **Author**: Zylos Team
-**Repository**: https://github.com/zylos-ai/zylos-lark
+**Repository**: https://github.com/zylos-ai/zylos-feishu
 **Status**: Implemented
 
 ---
@@ -12,14 +12,14 @@
 
 ### 1.1 Component Overview
 
-zylos-lark is a Zylos communication component that enables bidirectional messaging between users and the Claude Agent via the Lark/Feishu Webhook API.
+zylos-feishu is a Zylos communication component that enables bidirectional messaging between users and the Claude Agent via the Feishu (飞书) WebSocket API.
 
 | Property | Value |
 |----------|-------|
 | Type | Communication |
 | Priority | P0 |
 | Dependency | C4 Communication Bridge |
-| Base Code | zylos-infra/lark-agent (~80% reused) |
+| Base Code | Forked from zylos-feishu, adapted for Feishu |
 
 ### 1.2 Core Features
 
@@ -39,8 +39,8 @@ zylos-lark is a Zylos communication component that enables bidirectional messagi
 
 - Voice message handling
 - Video processing
-- Lark approval/calendar creation (handled via CLI)
-- Lark interactive card messages
+- Feishu approval/calendar creation (handled via CLI)
+- Feishu interactive card messages
 
 ---
 
@@ -49,7 +49,7 @@ zylos-lark is a Zylos communication component that enables bidirectional messagi
 ### 2.1 Skills Directory (Code)
 
 ```
-~/zylos/.claude/skills/lark/
+~/zylos/.claude/skills/feishu/
 ├── SKILL.md              # Component metadata (v2 format with lifecycle)
 ├── package.json          # Dependency definitions
 ├── ecosystem.config.cjs  # PM2 configuration
@@ -61,7 +61,7 @@ zylos-lark is a Zylos communication component that enables bidirectional messagi
 │   └── post-upgrade.js   # Post-upgrade hook (config migration)
 └── src/
     ├── index.js          # Main entry point (Webhook server)
-    ├── cli.js            # Lark API CLI tool
+    ├── cli.js            # Feishu API CLI tool
     ├── admin.js          # Admin CLI
     └── lib/
         ├── config.js     # Configuration loader
@@ -76,7 +76,7 @@ zylos-lark is a Zylos communication component that enables bidirectional messagi
 ### 2.2 Data Directory (Runtime Data)
 
 ```
-~/zylos/components/lark/
+~/zylos/components/feishu/
 ├── config.json           # Runtime configuration
 ├── group-cursors.json    # Group message cursors (tracks processed messages)
 ├── user-cache.json       # User name cache
@@ -95,7 +95,7 @@ zylos-lark is a Zylos communication component that enables bidirectional messagi
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                     zylos-lark                           │
+│                     zylos-feishu                           │
 ├─────────────────────────────────────────────────────────┤
 │                                                          │
 │  ┌──────────────┐    ┌──────────────┐                   │
@@ -127,7 +127,7 @@ zylos-lark is a Zylos communication component that enables bidirectional messagi
 |--------|------|----------------|
 | Main | index.js | Express Webhook server, event handling, message formatting, calling c4-receive |
 | Config | lib/config.js | Load .env + config.json, hot-reload configuration |
-| Client | lib/client.js | Lark API authentication (app_id + app_secret -> tenant_access_token) |
+| Client | lib/client.js | Feishu API authentication (app_id + app_secret -> tenant_access_token) |
 | Message | lib/message.js | Send/receive messages, file upload/download |
 | Document | lib/document.js | Document reading, spreadsheet read/write |
 | Calendar | lib/calendar.js | Calendar event queries |
@@ -135,20 +135,20 @@ zylos-lark is a Zylos communication component that enables bidirectional messagi
 | Contact | lib/contact.js | User information lookup |
 | Send | scripts/send.js | C4 standard interface for sending text and media |
 | Admin | src/admin.js | CLI for managing config (groups, whitelist, owner) |
-| CLI | src/cli.js | Lark API command-line tool |
+| CLI | src/cli.js | Feishu API command-line tool |
 
 ---
 
 ## 4. C4 Integration
 
-### 4.1 Receive Flow (Lark -> Claude)
+### 4.1 Receive Flow (Feishu -> Claude)
 
 ```
 User sends message
      │
      ▼
 ┌─────────────┐
-│  index.js   │  Listens for Lark Webhooks
+│  index.js   │  Listens for Feishu WebSockets
 └─────┬───────┘
       │ 1. Decrypt (if encrypt_key is set)
       │ 2. Owner / whitelist validation
@@ -157,13 +157,13 @@ User sends message
 ┌─────────────┐
 │ Format msg  │
 └─────┬───────┘
-      │ Format: "[Lark DM] username said: message content"
-      │         "[Lark GROUP] username said: [context] message content"
+      │ Format: "[Feishu DM] username said: message content"
+      │         "[Feishu GROUP] username said: [context] message content"
       ▼
 ┌─────────────┐
 │ c4-receive  │  C4 Bridge interface
 └─────┬───────┘
-      │ --channel lark
+      │ --channel feishu
       │ --endpoint <chat_id>
       │ --content "..."
       ▼
@@ -172,7 +172,7 @@ User sends message
 └─────────────┘
 ```
 
-### 4.2 Send Flow (Claude -> Lark)
+### 4.2 Send Flow (Claude -> Feishu)
 
 ```
 Claude needs to reply
@@ -181,24 +181,24 @@ Claude needs to reply
 ┌─────────────┐
 │  c4-send    │  C4 Bridge
 └─────┬───────┘
-      │ c4-send lark <chat_id> "message content"
+      │ c4-send feishu <chat_id> "message content"
       ▼
 ┌──────────────────────────────────────┐
-│ ~/zylos/.claude/skills/lark/scripts/send.js │
+│ ~/zylos/.claude/skills/feishu/scripts/send.js │
 └─────┬────────────────────────────────┘
       │ 1. Parse arguments
       │ 2. Check for media prefix [MEDIA:type]
-      │ 3. Call Lark API
+      │ 3. Call Feishu API
       ▼
 ┌─────────────┐
-│ Lark        │  User receives message
+│ Feishu      │  User receives message
 └─────────────┘
 ```
 
 ### 4.3 send.js Interface Specification
 
 ```bash
-# Location: ~/zylos/.claude/skills/lark/scripts/send.js
+# Location: ~/zylos/.claude/skills/feishu/scripts/send.js
 # Usage: node send.js <chat_id> <message>
 # Returns: 0 on success, non-zero on failure
 
@@ -218,17 +218,17 @@ node send.js "oc_xxx" "[MEDIA:file]/path/to/document.pdf"
 
 ```
 # Direct message
-[Lark DM] Howard said: Hello
+[Feishu DM] Howard said: Hello
 
 # Group @mention (with context)
-[Lark GROUP] Howard said: [Group context - recent messages before this @mention:]
+[Feishu GROUP] Howard said: [Group context - recent messages before this @mention:]
 [Alice]: Do we need to deploy today?
 [Bob]: Let me confirm first
 
 [Current message:] @Zylos Can you take a look
 
 # With image
-[Lark DM] Howard said: [image] What is this ---- file: ~/zylos/components/lark/media/lark-xxx.png
+[Feishu DM] Howard said: [image] What is this ---- file: ~/zylos/components/feishu/media/feishu-xxx.png
 ```
 
 ---
@@ -280,7 +280,7 @@ node send.js "oc_xxx" "[MEDIA:file]/path/to/document.pdf"
 |-------|------|-------------|
 | enabled | boolean | Component enable/disable toggle |
 | webhook_port | number | Webhook listening port |
-| bot.encrypt_key | string | Lark event encryption key (optional) |
+| bot.encrypt_key | string | Feishu event encryption key (optional) |
 | owner.bound | boolean | Whether an owner has been bound |
 | owner.user_id | string | Owner's user_id |
 | owner.open_id | string | Owner's open_id |
@@ -296,9 +296,9 @@ node send.js "oc_xxx" "[MEDIA:file]/path/to/document.pdf"
 ### 5.3 Environment Variables (~/zylos/.env)
 
 ```bash
-# Lark App credentials (required)
-LARK_APP_ID=cli_xxx
-LARK_APP_SECRET=xxx
+# Feishu App credentials (required)
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
 ```
 
 ---
@@ -365,9 +365,9 @@ User sends message
 
 ## 7. Differences from Telegram Component
 
-| Aspect | zylos-telegram | zylos-lark |
+| Aspect | zylos-telegram | zylos-feishu |
 |--------|---------------|------------|
-| Protocol | Telegram Bot API (long polling) | Lark Webhook (HTTP POST) |
+| Protocol | Telegram Bot API (long polling) | Feishu WebSocket (HTTP POST) |
 | Entry point | bot.js (Telegraf) | index.js (Express) |
 | Authentication | Bot Token | App ID + Secret -> tenant_access_token |
 | Message encryption | None | AES-256-CBC (optional) |
@@ -389,9 +389,9 @@ const os = require('os');
 
 module.exports = {
   apps: [{
-    name: 'zylos-lark',
+    name: 'zylos-feishu',
     script: 'src/index.js',
-    cwd: path.join(os.homedir(), 'zylos/.claude/skills/lark'),
+    cwd: path.join(os.homedir(), 'zylos/.claude/skills/feishu'),
     env: { NODE_ENV: 'production' }
   }]
 };
@@ -400,10 +400,10 @@ module.exports = {
 ### 8.2 Service Commands
 
 ```bash
-pm2 start ~/zylos/.claude/skills/lark/ecosystem.config.cjs
-pm2 stop zylos-lark
-pm2 restart zylos-lark
-pm2 logs zylos-lark
+pm2 start ~/zylos/.claude/skills/feishu/ecosystem.config.cjs
+pm2 stop zylos-feishu
+pm2 restart zylos-feishu
+pm2 logs zylos-feishu
 ```
 
 ---
@@ -414,15 +414,15 @@ pm2 logs zylos-lark
 
 ```bash
 # Install
-zylos install lark
-# 1. git clone to ~/zylos/.claude/skills/lark
+zylos install feishu
+# 1. git clone to ~/zylos/.claude/skills/feishu
 # 2. npm install
 # 3. Create data_dir
 # 4. Register PM2 service
 # 5. Execute post-install hook
 
 # Upgrade
-zylos upgrade lark
+zylos upgrade feishu
 # 1. pre-upgrade hook (backup config)
 # 2. git pull
 # 3. npm install
@@ -430,7 +430,7 @@ zylos upgrade lark
 # 5. PM2 restart service
 
 # Uninstall
-zylos uninstall lark [--purge]
+zylos uninstall feishu [--purge]
 # 1. Remove PM2 service
 # 2. Delete skill directory
 # 3. --purge: delete data directory
@@ -440,7 +440,7 @@ zylos uninstall lark [--purge]
 
 ## 10. Acceptance Criteria
 
-- [ ] `zylos install lark` completes installation on a fresh environment
+- [ ] `zylos install feishu` completes installation on a fresh environment
 - [ ] `node send.js <chat_id> <message>` sends messages correctly
 - [ ] Direct messages are correctly forwarded to c4-receive
 - [ ] Group @mentions include context and are forwarded to c4-receive
@@ -448,8 +448,8 @@ zylos uninstall lark [--purge]
 - [ ] Auto owner binding flow works correctly
 - [ ] Owner can @bot in any group to trigger a response
 - [ ] admin.js correctly manages configuration
-- [ ] `zylos upgrade lark` preserves user config and performs migration
-- [ ] `zylos uninstall lark` cleans up correctly
+- [ ] `zylos upgrade feishu` preserves user config and performs migration
+- [ ] `zylos uninstall feishu` cleans up correctly
 
 ---
 
@@ -471,8 +471,8 @@ zylos uninstall lark [--purge]
 
 ### B. References
 
-- [Lark Open Platform Documentation](https://open.feishu.cn/document/)
-- [Lark Node SDK](https://github.com/larksuite/node-sdk)
+- [Feishu Open Platform Documentation](https://open.feishu.cn/document/)
+- [Feishu/Lark Node SDK](https://github.com/larksuite/node-sdk)
 - [zylos-telegram DESIGN.md](../zylos-telegram/DESIGN.md)
 
 ---

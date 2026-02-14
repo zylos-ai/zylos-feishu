@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * zylos-lark admin CLI
- * Manage lark bot configuration
+ * zylos-feishu admin CLI
+ * Manage feishu bot configuration
  *
  * Usage: node admin.js <command> [args]
  */
@@ -51,7 +51,7 @@ const commands = {
     });
     saveConfig(config);
     console.log(`Added allowed group: ${chatId} (${name})`);
-    console.log('Run: pm2 restart zylos-lark');
+    console.log('Run: pm2 restart zylos-feishu');
   },
 
   'remove-allowed-group': (chatId) => {
@@ -74,7 +74,7 @@ const commands = {
     const removed = config.allowed_groups.splice(index, 1)[0];
     saveConfig(config);
     console.log(`Removed allowed group: ${chatId} (${removed.name})`);
-    console.log('Run: pm2 restart zylos-lark');
+    console.log('Run: pm2 restart zylos-feishu');
   },
 
   'list-smart-groups': () => {
@@ -113,7 +113,7 @@ const commands = {
     });
     saveConfig(config);
     console.log(`Added smart group: ${chatId} (${name})`);
-    console.log('Run: pm2 restart zylos-lark');
+    console.log('Run: pm2 restart zylos-feishu');
   },
 
   'remove-smart-group': (chatId) => {
@@ -136,7 +136,7 @@ const commands = {
     const removed = config.smart_groups.splice(index, 1)[0];
     saveConfig(config);
     console.log(`Removed smart group: ${chatId} (${removed.name})`);
-    console.log('Run: pm2 restart zylos-lark');
+    console.log('Run: pm2 restart zylos-feishu');
   },
 
   'list-whitelist': () => {
@@ -175,7 +175,7 @@ const commands = {
       console.log('Note: Whitelist is currently disabled (all users allowed).');
       console.log('To enable: edit config.json and set whitelist.enabled = true');
     }
-    console.log('Run: pm2 restart zylos-lark');
+    console.log('Run: pm2 restart zylos-feishu');
   },
 
   'remove-whitelist': (userId) => {
@@ -218,7 +218,7 @@ const commands = {
     }
     saveConfig(config);
     console.log('Whitelist enabled. Only owner + whitelisted users can interact.');
-    console.log('Run: pm2 restart zylos-lark');
+    console.log('Run: pm2 restart zylos-feishu');
   },
 
   'disable-whitelist': () => {
@@ -228,7 +228,7 @@ const commands = {
     }
     saveConfig(config);
     console.log('Whitelist disabled. All users can interact.');
-    console.log('Run: pm2 restart zylos-lark');
+    console.log('Run: pm2 restart zylos-feishu');
   },
 
   'enable-group-whitelist': () => {
@@ -240,7 +240,7 @@ const commands = {
     }
     saveConfig(config);
     console.log('Group whitelist enabled. Only allowed_groups + owner can trigger bot in groups.');
-    console.log('Run: pm2 restart zylos-lark');
+    console.log('Run: pm2 restart zylos-feishu');
   },
 
   'disable-group-whitelist': () => {
@@ -252,7 +252,7 @@ const commands = {
     }
     saveConfig(config);
     console.log('Group whitelist disabled. All groups can trigger bot (open mode).');
-    console.log('Run: pm2 restart zylos-lark');
+    console.log('Run: pm2 restart zylos-feishu');
   },
 
   'show-owner': () => {
@@ -269,7 +269,7 @@ const commands = {
 
   'help': () => {
     console.log(`
-zylos-lark admin CLI
+zylos-feishu admin CLI
 
 Commands:
   show                                Show full config
@@ -299,7 +299,7 @@ Commands:
 
 Note: Owner can always @mention bot in any group regardless of whitelist.
 
-After changes, restart bot: pm2 restart zylos-lark
+After changes, restart bot: pm2 restart zylos-feishu
 `);
   }
 };

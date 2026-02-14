@@ -1,6 +1,6 @@
 ---
 name: feishu
-version: 0.1.2
+version: 0.1.0
 description: Feishu communication channel
 type: communication
 

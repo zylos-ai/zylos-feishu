@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Lark CLI - Command line interface for Lark/Feishu API
+ * Feishu CLI - Command line interface for Feishu (飞书) API
  */
 
 import dotenv from 'dotenv';
@@ -19,9 +19,9 @@ const command = args[0];
 
 function printUsage() {
   console.log(`
-Lark CLI - Interact with Lark/Feishu workspace
+Feishu CLI - Interact with Feishu (飞书) workspace
 
-Usage: lark-cli <command> [options]
+Usage: feishu-cli <command> [options]
 
 Commands:
   test                           Test API authentication
@@ -56,11 +56,11 @@ Commands:
   user-info <id>                 Get user info by user_id or open_id (ou_xxx)
 
 Examples:
-  lark-cli test
-  lark-cli send-group oc_xxx "Hello team!"
-  lark-cli messages oc_xxx --limit 10
-  lark-cli doc doccnXXX
-  lark-cli sheet-read TOKEN SheetId!A1:D20
+  feishu-cli test
+  feishu-cli send-group oc_xxx "Hello team!"
+  feishu-cli messages oc_xxx --limit 10
+  feishu-cli doc doccnXXX
+  feishu-cli sheet-read TOKEN SheetId!A1:D20
 `);
 }
 
@@ -80,7 +80,7 @@ async function main() {
 
       case 'send-group':
         if (args.length < 3) {
-          console.error('Usage: lark-cli send-group <chat_id> <message>');
+          console.error('Usage: feishu-cli send-group <chat_id> <message>');
           process.exit(1);
         }
         result = await sendToGroup(args[1], args[2]);
@@ -88,7 +88,7 @@ async function main() {
 
       case 'send-user':
         if (args.length < 3) {
-          console.error('Usage: lark-cli send-user <user_id> <message>');
+          console.error('Usage: feishu-cli send-user <user_id> <message>');
           process.exit(1);
         }
         result = await sendToUser(args[1], args[2]);
@@ -96,7 +96,7 @@ async function main() {
 
       case 'send-image':
         if (args.length < 3) {
-          console.error('Usage: lark-cli send-image <chat_id> <image_path>');
+          console.error('Usage: feishu-cli send-image <chat_id> <image_path>');
           process.exit(1);
         }
         const uploadImgResult = await uploadImage(args[2]);
@@ -109,7 +109,7 @@ async function main() {
 
       case 'send-file':
         if (args.length < 3) {
-          console.error('Usage: lark-cli send-file <chat_id> <file_path>');
+          console.error('Usage: feishu-cli send-file <chat_id> <file_path>');
           process.exit(1);
         }
         const uploadFileResult = await uploadFile(args[2]);
@@ -122,7 +122,7 @@ async function main() {
 
       case 'download-image':
         if (args.length < 4) {
-          console.error('Usage: lark-cli download-image <message_id> <image_key> <save_path>');
+          console.error('Usage: feishu-cli download-image <message_id> <image_key> <save_path>');
           process.exit(1);
         }
         result = await downloadImage(args[1], args[2], args[3]);
@@ -130,7 +130,7 @@ async function main() {
 
       case 'download-file':
         if (args.length < 4) {
-          console.error('Usage: lark-cli download-file <message_id> <file_key> <save_path>');
+          console.error('Usage: feishu-cli download-file <message_id> <file_key> <save_path>');
           process.exit(1);
         }
         result = await downloadFile(args[1], args[2], args[3]);
@@ -138,7 +138,7 @@ async function main() {
 
       case 'messages':
         if (args.length < 2) {
-          console.error('Usage: lark-cli messages <chat_id> [--limit N] [--today] [--days N]');
+          console.error('Usage: feishu-cli messages <chat_id> [--limit N] [--today] [--days N]');
           process.exit(1);
         }
         const msgLimit = args.includes('--limit')
@@ -173,7 +173,7 @@ async function main() {
 
       case 'doc':
         if (args.length < 2) {
-          console.error('Usage: lark-cli doc <doc_id> [--info]');
+          console.error('Usage: feishu-cli doc <doc_id> [--info]');
           process.exit(1);
         }
         if (args.includes('--info')) {
@@ -189,7 +189,7 @@ async function main() {
 
       case 'wiki':
         if (args.length < 2) {
-          console.error('Usage: lark-cli wiki <token>');
+          console.error('Usage: feishu-cli wiki <token>');
           process.exit(1);
         }
         result = await getWikiNode(args[1]);
@@ -203,7 +203,7 @@ async function main() {
 
       case 'sheet':
         if (args.length < 2) {
-          console.error('Usage: lark-cli sheet <token>');
+          console.error('Usage: feishu-cli sheet <token>');
           process.exit(1);
         }
         result = await getSpreadsheet(args[1]);
@@ -222,7 +222,7 @@ async function main() {
 
       case 'sheet-read':
         if (args.length < 3) {
-          console.error('Usage: lark-cli sheet-read <token> <range>');
+          console.error('Usage: feishu-cli sheet-read <token> <range>');
           process.exit(1);
         }
         result = await getSheetValues(args[1], args[2]);
@@ -237,7 +237,7 @@ async function main() {
 
       case 'sheet-write':
         if (args.length < 4) {
-          console.error('Usage: lark-cli sheet-write <token> <range> <value1> [value2] ...');
+          console.error('Usage: feishu-cli sheet-write <token> <range> <value1> [value2] ...');
           process.exit(1);
         }
         const writeValues = args.slice(3);
@@ -250,7 +250,7 @@ async function main() {
 
       case 'sheet-copy':
         if (args.length < 4) {
-          console.error('Usage: lark-cli sheet-copy <token> <sourceSheetId> <newTitle>');
+          console.error('Usage: feishu-cli sheet-copy <token> <sourceSheetId> <newTitle>');
           process.exit(1);
         }
         result = await copySheet(args[1], args[2], args[3]);
@@ -258,7 +258,7 @@ async function main() {
 
       case 'sheet-add':
         if (args.length < 3) {
-          console.error('Usage: lark-cli sheet-add <token> <title>');
+          console.error('Usage: feishu-cli sheet-add <token> <title>');
           process.exit(1);
         }
         result = await addSheet(args[1], args[2]);
@@ -295,7 +295,7 @@ async function main() {
 
       case 'members':
         if (args.length < 2) {
-          console.error('Usage: lark-cli members <chat_id>');
+          console.error('Usage: feishu-cli members <chat_id>');
           process.exit(1);
         }
         result = await listChatMembers(args[1]);
@@ -309,7 +309,7 @@ async function main() {
 
       case 'search-chat':
         if (args.length < 2) {
-          console.error('Usage: lark-cli search-chat <query>');
+          console.error('Usage: feishu-cli search-chat <query>');
           process.exit(1);
         }
         result = await searchChats(args[1]);
@@ -323,7 +323,7 @@ async function main() {
 
       case 'user':
         if (args.length < 2) {
-          console.error('Usage: lark-cli user <email_or_mobile>');
+          console.error('Usage: feishu-cli user <email_or_mobile>');
           process.exit(1);
         }
         result = await getUserId(args[1]);
@@ -335,7 +335,7 @@ async function main() {
 
       case 'user-info':
         if (args.length < 2) {
-          console.error('Usage: lark-cli user-info <user_id_or_open_id>');
+          console.error('Usage: feishu-cli user-info <user_id_or_open_id>');
           process.exit(1);
         }
         result = await getUserInfo(args[1]);

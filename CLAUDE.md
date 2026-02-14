@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Development guidelines for zylos-lark.
+Development guidelines for zylos-feishu.
 
 ## Project Conventions
 
@@ -13,13 +13,13 @@ Development guidelines for zylos-lark.
 
 ## Architecture
 
-This is a **communication component** for the Zylos agent ecosystem.
+This is a **communication component** for the Zylos agent ecosystem (Feishu/飞书 Chinese platform).
 
-- `src/index.js` — Main entry point (Express webhook server)
-- `src/cli.js` — Lark API CLI tool (documents, spreadsheets, calendar, contacts)
+- `src/index.js` — Main entry point (WebSocket event receiver)
+- `src/cli.js` — Feishu API CLI tool (documents, spreadsheets, calendar, contacts)
 - `src/admin.js` — Admin CLI (config, groups, whitelist management)
 - `src/lib/config.js` — Config loader with hot-reload
-- `src/lib/client.js` — Lark API authentication client
+- `src/lib/client.js` — Feishu API authentication client
 - `src/lib/message.js` — Message send/receive, file upload/download
 - `src/lib/document.js` — Document and spreadsheet operations
 - `src/lib/calendar.js` — Calendar event queries

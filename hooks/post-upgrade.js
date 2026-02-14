@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Post-upgrade hook for zylos-lark
+ * Post-upgrade hook for zylos-feishu
  *
  * Called by Claude after CLI upgrade completes (zylos upgrade --json).
  * CLI handles: stop service, backup, file sync, npm install, manifest.
@@ -16,10 +16,10 @@ import fs from 'fs';
 import path from 'path';
 
 const HOME = process.env.HOME;
-const DATA_DIR = path.join(HOME, 'zylos/components/lark');
+const DATA_DIR = path.join(HOME, 'zylos/components/feishu');
 const configPath = path.join(DATA_DIR, 'config.json');
 
-console.log('[post-upgrade] Running lark-specific migrations...\n');
+console.log('[post-upgrade] Running feishu-specific migrations...\n');
 
 // Config migrations
 if (fs.existsSync(configPath)) {

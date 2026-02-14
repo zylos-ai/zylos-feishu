@@ -1,5 +1,5 @@
 /**
- * Lark Calendar Functions
+ * Feishu Calendar Functions
  */
 
 import { getClient } from './client.js';
@@ -100,12 +100,12 @@ export async function listEvents(days = 7, calendarId = null) {
 }
 
 /**
- * Format event time from Lark API format
+ * Format event time from Feishu API format
  */
 function formatEventTime(timeObj) {
   if (!timeObj) return null;
 
-  // Lark returns timestamp in seconds
+  // Feishu returns timestamp in seconds
   if (timeObj.timestamp) {
     return new Date(parseInt(timeObj.timestamp) * 1000).toISOString();
   }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Pre-upgrade hook for zylos-lark
+ * Pre-upgrade hook for zylos-feishu
  *
  * Called by Claude BEFORE CLI upgrade steps.
  * If this hook fails (exit code 1), the upgrade is aborted.
@@ -19,10 +19,10 @@ import fs from 'fs';
 import path from 'path';
 
 const HOME = process.env.HOME;
-const DATA_DIR = path.join(HOME, 'zylos/components/lark');
+const DATA_DIR = path.join(HOME, 'zylos/components/feishu');
 const configPath = path.join(DATA_DIR, 'config.json');
 
-console.log('[pre-upgrade] Running lark pre-upgrade checks...\n');
+console.log('[pre-upgrade] Running feishu pre-upgrade checks...\n');
 
 // 1. Backup config before upgrade
 if (fs.existsSync(configPath)) {

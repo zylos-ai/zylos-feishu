@@ -1,5 +1,5 @@
 /**
- * Lark Contact/User Functions
+ * Feishu Contact/User Functions
  */
 
 import { getClient } from './client.js';

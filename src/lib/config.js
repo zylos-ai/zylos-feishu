@@ -1,5 +1,5 @@
 /**
- * Configuration loader for zylos-lark
+ * Configuration loader for zylos-feishu
  *
  * Loads config from ~/zylos/components/feishu/config.json
  * Secrets from ~/zylos/.env (FEISHU_APP_ID, FEISHU_APP_SECRET)

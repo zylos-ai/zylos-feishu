@@ -1,5 +1,5 @@
 /**
- * Lark Chat/Group Functions
+ * Feishu Chat/Group Functions
  */
 
 import { getClient } from './client.js';

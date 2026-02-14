@@ -2,10 +2,10 @@
   <img src="./assets/logo.png" alt="Zylos" height="120">
 </p>
 
-<h1 align="center">zylos-lark</h1>
+<h1 align="center">zylos-feishu</h1>
 
 <p align="center">
-  <a href="https://github.com/zylos-ai/zylos-core">Zylos</a> 智能体的飞书/Lark 通讯组件。
+  <a href="https://github.com/zylos-ai/zylos-core">Zylos</a> 智能体的飞书通讯组件。
 </p>
 
 <p align="center">
@@ -32,12 +32,12 @@
 
 告诉你的 Zylos 智能体：
 
-> "安装 lark 组件"
+> "安装飞书组件"
 
 或使用 CLI：
 
 ```bash
-zylos add lark
+zylos add feishu
 ```
 
 Zylos 会引导你完成设置，包括配置飞书应用凭证。安装完成后，在飞书上给机器人发消息 — 第一个交互的用户自动成为管理员。
@@ -58,8 +58,8 @@ Zylos 会引导你完成设置，包括配置飞书应用凭证。安装完成�
 或通过 CLI 管理：
 
 ```bash
-zylos upgrade lark
-zylos uninstall lark
+zylos upgrade feishu
+zylos uninstall feishu
 ```
 
 ## 群聊行为

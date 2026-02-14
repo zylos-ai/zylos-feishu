@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * C4 Communication Bridge Interface for zylos-lark
+ * C4 Communication Bridge Interface for zylos-feishu
  *
  * Usage:
  *   ./send.js <endpoint_id> "message text"
@@ -19,7 +19,7 @@ dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 import { getConfig } from '../src/lib/config.js';
 import { sendToGroup, uploadImage, sendImage, uploadFile, sendFile } from '../src/lib/message.js';
 
-const MAX_LENGTH = 2000;  // Lark message max length
+const MAX_LENGTH = 2000;  // Feishu message max length
 
 // Parse arguments
 const args = process.argv.slice(2);
