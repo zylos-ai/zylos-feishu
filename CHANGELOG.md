@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-02-15
+
+### Added
+- Dual connection mode: WebSocket (default) and Webhook, configurable via `connection_mode` in config.json
+- Interactive mode selection in post-install hook
+- SKILL.md `http_routes` declaration for Caddy integration (webhook mode)
+- Startup gate: service refuses to start without `verification_token` in webhook mode
+- Runtime guard: webhook rejects requests when `verification_token` is missing
+
+### Changed
+- `verification_token` is now **required** for webhook mode (previously optional)
+- post-install hook prompts for verification token directly (no optional gate)
+
 ## [0.1.0] - 2026-02-14
 
 Initial release. Forked from zylos-lark and adapted for Feishu (飞书) Chinese platform.
