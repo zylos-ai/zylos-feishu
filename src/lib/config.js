@@ -15,6 +15,8 @@ export const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 // Default configuration
 export const DEFAULT_CONFIG = {
   enabled: true,
+  // Connection mode: 'websocket' (SDK WSClient) or 'webhook' (Express HTTP server)
+  connection_mode: 'websocket',
   webhook_port: 3458,
   // Bot settings
   bot: {

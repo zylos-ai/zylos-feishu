@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 /**
- * zylos-feishu - Feishu Bot Service (WebSocket Long Connection)
+ * zylos-feishu - Feishu Bot Service
  *
- * Uses Feishu SDK WSClient for persistent connection event subscription.
- * No webhook server needed — connects to Feishu via WebSocket.
+ * Supports two connection modes (configured via config.json connection_mode):
+ *   - websocket: Feishu SDK WSClient for persistent long connection
+ *   - webhook: Express HTTP server for receiving webhook events
  */
 
 import dotenv from 'dotenv';
+import express from 'express';
+import crypto from 'crypto';
 import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -25,11 +28,13 @@ const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge
 // Bot identity (fetched at startup)
 let botOpenId = '';
 
-// WSClient instance for graceful shutdown
+// WSClient instance for graceful shutdown (websocket mode only)
 let wsClient = null;
 
 // Initialize
-console.log(`[feishu] Starting (WebSocket mode)...`);
+let config = getConfig();
+const connectionMode = config.connection_mode || 'websocket';
+console.log(`[feishu] Starting (${connectionMode} mode)...`);
 console.log(`[feishu] Data directory: ${DATA_DIR}`);
 
 // Ensure directories exist
@@ -42,8 +47,6 @@ fs.mkdirSync(MEDIA_DIR, { recursive: true });
 const CURSORS_PATH = path.join(DATA_DIR, 'group-cursors.json');
 const USER_CACHE_PATH = path.join(DATA_DIR, 'user-cache.json');
 
-// Load configuration
-let config = getConfig();
 console.log(`[feishu] Config loaded, enabled: ${config.enabled}`);
 
 if (!config.enabled) {
@@ -110,6 +113,19 @@ async function resolveUserName(userId) {
   return userId;
 }
 
+// Decrypt message if encrypt_key is set (webhook mode only)
+function decrypt(encrypt, encryptKey) {
+  if (!encryptKey) return null;
+  const encryptBuffer = Buffer.from(encrypt, 'base64');
+  const key = crypto.createHash('sha256').update(encryptKey).digest();
+  const iv = encryptBuffer.slice(0, 16);
+  const encrypted = encryptBuffer.slice(16);
+  const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+  let decrypted = decipher.update(encrypted, undefined, 'utf8');
+  decrypted += decipher.final('utf8');
+  return JSON.parse(decrypted);
+}
+
 // Log message (mentions resolved to real names for readable context)
 async function logMessage(chatType, chatId, userId, openId, text, messageId, timestamp, mentions) {
   const userName = await resolveUserName(userId);
@@ -124,7 +140,6 @@ async function logMessage(chatType, chatId, userId, openId, text, messageId, tim
   };
   const logLine = JSON.stringify(logEntry) + '\n';
 
-  // Use chatId for groups (oc_xxx), userId for private chats
   const logId = chatType === 'p2p' ? userId : chatId;
   const logFile = path.join(LOGS_DIR, `${logId}.log`);
   fs.appendFileSync(logFile, logLine);
@@ -168,16 +183,18 @@ function updateCursor(chatId, messageId) {
 }
 
 // Check if bot is mentioned
-function isBotMentioned(mentions, botOpenId) {
+function isBotMentioned(mentions, botId) {
   if (!mentions || !Array.isArray(mentions)) return false;
   return mentions.some(m => {
     const mentionId = m.id?.open_id || m.id?.user_id || m.id?.app_id || '';
-    return mentionId === botOpenId || m.key === '@_all';
+    return mentionId === botId || m.key === '@_all';
   });
 }
 
 /**
  * Resolve @_user_N placeholders in message text to real names.
+ * Feishu replaces @mentions with @_user_1, @_user_2, etc. in the raw text.
+ * The mentions array contains the mapping: { key: "@_user_1", name: "Name", id: { ... } }
  */
 function resolveMentions(text, mentions, { stripBot = false, botOpenId: botId } = {}) {
   if (!text || !mentions || !Array.isArray(mentions) || mentions.length === 0) return text;
@@ -271,6 +288,12 @@ function formatMessage(chatType, userName, text, contextMessages = [], mediaPath
 
 /**
  * Extract text from a Feishu post (rich text) message.
+ * Post messages have nested arrays: paragraphs > elements.
+ * Each element has a tag (text, at, a, img, media, emotion).
+ *
+ * @param {Array} paragraphs - content.content array from post message
+ * @param {string} messageId - message ID for lazy media references
+ * @returns {{ text: string, imageKeys: string[] }} Extracted text and image keys
  */
 function extractPostText(paragraphs, messageId) {
   const imageKeys = [];
@@ -364,7 +387,8 @@ function isOwner(userId, openId) {
   return config.owner.user_id === userId || config.owner.open_id === openId;
 }
 
-// Check whitelist
+// Check whitelist (supports both user_id and open_id)
+// Owner is always allowed
 function isWhitelisted(userId, openId) {
   if (isOwner(userId, openId)) return true;
   if (!config.whitelist?.enabled) return true;
@@ -373,8 +397,10 @@ function isWhitelisted(userId, openId) {
 }
 
 /**
- * Handle im.message.receive_v1 event from WSClient
- * The data object contains { message, sender } directly.
+ * Handle im.message.receive_v1 event.
+ * Shared by both websocket and webhook modes.
+ *
+ * @param {object} data - { message, sender } from the event
  */
 async function handleMessage(data) {
   const message = data.message;
@@ -401,7 +427,7 @@ async function handleMessage(data) {
     logText = logText ? `${logText}\n${fileInfo}` : fileInfo;
   }
 
-  logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, null, mentions);
+  logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, data._timestamp || null, mentions);
 
   // Private chat handling
   if (chatType === 'p2p') {
@@ -517,6 +543,112 @@ async function handleMessage(data) {
   }
 }
 
+// ============================================================
+// Transport: WebSocket mode (Feishu SDK WSClient)
+// ============================================================
+
+function startWebSocket(creds) {
+  wsClient = new Lark.WSClient({
+    appId: creds.app_id,
+    appSecret: creds.app_secret,
+    domain: Lark.Domain.Feishu,
+    loggerLevel: Lark.LoggerLevel.info,
+    autoReconnect: true
+  });
+
+  console.log('[feishu] Connecting to Feishu via WebSocket...');
+
+  wsClient.start({
+    eventDispatcher: new Lark.EventDispatcher({}).register({
+      'im.message.receive_v1': async (data) => {
+        try {
+          await handleMessage(data);
+        } catch (err) {
+          console.error(`[feishu] Error handling message: ${err.message}`);
+        }
+      }
+    })
+  });
+}
+
+// ============================================================
+// Transport: Webhook mode (Express HTTP server)
+// ============================================================
+
+function startWebhook(creds) {
+  const PORT = config.webhook_port || 3458;
+
+  const app = express();
+  app.use(express.json());
+
+  app.post('/webhook', async (req, res) => {
+    console.log('[feishu] Received webhook request');
+
+    let event = req.body;
+
+    // Handle encrypted events
+    if (event.encrypt && config.bot?.encrypt_key) {
+      try {
+        event = decrypt(event.encrypt, config.bot.encrypt_key);
+      } catch (err) {
+        console.error('[feishu] Decryption failed:', err.message);
+        return res.status(400).json({ error: 'Decryption failed' });
+      }
+    }
+
+    // Verify token (required for webhook mode)
+    const verificationToken = config.bot?.verification_token;
+    if (verificationToken) {
+      const eventToken = event.token || event.header?.token;
+      if (eventToken !== verificationToken) {
+        console.warn(`[feishu] Verification token mismatch, rejecting request`);
+        return res.status(403).json({ error: 'Token verification failed' });
+      }
+    }
+
+    // URL Verification Challenge
+    if (event.type === 'url_verification') {
+      console.log('[feishu] URL verification challenge received');
+      return res.json({ challenge: event.challenge });
+    }
+
+    // Handle message event
+    if (event.header?.event_type === 'im.message.receive_v1') {
+      try {
+        // Normalize data shape to match WSClient format for shared handleMessage
+        const data = {
+          message: event.event.message,
+          sender: event.event.sender,
+          _timestamp: event.header.create_time
+        };
+        await handleMessage(data);
+      } catch (err) {
+        console.error(`[feishu] Error handling message: ${err.message}`);
+      }
+    }
+
+    res.json({ code: 0 });
+  });
+
+  // Health check
+  app.get('/health', (req, res) => {
+    res.json({
+      status: 'ok',
+      service: 'zylos-feishu',
+      mode: 'webhook',
+      cursors: Object.keys(groupCursors).length
+    });
+  });
+
+  app.listen(PORT, () => {
+    console.log(`[feishu] Webhook server running on port ${PORT}`);
+  });
+}
+
+// ============================================================
+// Startup
+// ============================================================
+
 // Graceful shutdown
 function shutdown() {
   console.log(`[feishu] Shutting down...`);
@@ -529,7 +661,7 @@ function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-// Start WSClient
+// Validate credentials
 const creds = getCredentials();
 
 if (!creds.app_id || !creds.app_secret) {
@@ -537,17 +669,7 @@ if (!creds.app_id || !creds.app_secret) {
   process.exit(1);
 }
 
-// Create API client (for sending messages - reuses existing client.js)
-// Create WSClient for receiving events
-wsClient = new Lark.WSClient({
-  appId: creds.app_id,
-  appSecret: creds.app_secret,
-  domain: Lark.Domain.Feishu,
-  loggerLevel: Lark.LoggerLevel.info,
-  autoReconnect: true
-});
-
-// Get bot identity via API client, then start WSClient
+// Fetch bot identity, then start the selected transport
 (async () => {
   try {
     const client = new Lark.Client({
@@ -572,18 +694,10 @@ wsClient = new Lark.WSClient({
     console.error(`[feishu] Warning: getBotInfo failed: ${err.message}`);
   }
 
-  // Start WebSocket connection
-  console.log('[feishu] Connecting to Feishu via WebSocket...');
-
-  wsClient.start({
-    eventDispatcher: new Lark.EventDispatcher({}).register({
-      'im.message.receive_v1': async (data) => {
-        try {
-          await handleMessage(data);
-        } catch (err) {
-          console.error(`[feishu] Error handling message: ${err.message}`);
-        }
-      }
-    })
-  });
+  // Start selected transport
+  if (connectionMode === 'webhook') {
+    startWebhook(creds);
+  } else {
+    startWebSocket(creds);
+  }
 })();
