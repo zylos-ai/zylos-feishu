@@ -9,6 +9,14 @@
     "cli": "node src/cli.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "homepage": "https://github.com/zylos-ai/zylos-feishu#readme",
+  "bugs": {
+    "url": "https://github.com/zylos-ai/zylos-feishu/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zylos-ai/zylos-feishu.git"
+  },
   "keywords": [
     "zylos",
     "feishu",
