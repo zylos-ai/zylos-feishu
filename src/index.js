@@ -584,10 +584,31 @@ function startWebSocket(creds) {
 function startWebhook(creds) {
   const PORT = config.webhook_port || 3458;
 
+  // Dedup: track recently processed message_ids (TTL 5 minutes)
+  const DEDUP_TTL = 5 * 60 * 1000;
+  const processedMessages = new Map();
+
+  function isDuplicate(messageId) {
+    if (!messageId) return false;
+    if (processedMessages.has(messageId)) {
+      console.log(`[feishu] Duplicate message_id ${messageId}, skipping`);
+      return true;
+    }
+    processedMessages.set(messageId, Date.now());
+    // Cleanup old entries
+    if (processedMessages.size > 100) {
+      const now = Date.now();
+      for (const [id, ts] of processedMessages) {
+        if (now - ts > DEDUP_TTL) processedMessages.delete(id);
+      }
+    }
+    return false;
+  }
+
   const app = express();
   app.use(express.json());
 
-  app.post('/webhook', async (req, res) => {
+  app.post('/webhook', (req, res) => {
     console.log('[feishu] Received webhook request');
 
     let event = req.body;
@@ -620,22 +641,24 @@ function startWebhook(creds) {
       return res.json({ challenge: event.challenge });
     }
 
-    // Handle message event
-    if (event.header?.event_type === 'im.message.receive_v1') {
-      try {
-        // Normalize data shape to match WSClient format for shared handleMessage
-        const data = {
-          message: event.event.message,
-          sender: event.event.sender,
-          _timestamp: event.header.create_time
-        };
-        await handleMessage(data);
-      } catch (err) {
-        console.error(`[feishu] Error handling message: ${err.message}`);
-      }
-    }
-
+    // Respond immediately to prevent Feishu retry (timeout ~15s)
     res.json({ code: 0 });
+
+    // Handle message event asynchronously
+    if (event.header?.event_type === 'im.message.receive_v1') {
+      const messageId = event.event?.message?.message_id;
+      if (isDuplicate(messageId)) return;
+
+      // Normalize data shape to match WSClient format for shared handleMessage
+      const data = {
+        message: event.event.message,
+        sender: event.event.sender,
+        _timestamp: event.header.create_time
+      };
+      handleMessage(data).catch(err => {
+        console.error(`[feishu] Error handling message: ${err.message}`);
+      });
+    }
   });
 
   // Health check
