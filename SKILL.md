@@ -32,7 +32,7 @@ config:
       description: "App Secret (same page as App ID)"
       sensitive: true
 
-next-steps: "After starting the service: 1) Read domain from ~/zylos/.zylos/config.json and tell user to configure webhook URL in the developer console — open.feishu.cn/app (Event Subscriptions -> Request URL -> https://{domain}/feishu/webhook). 2) Ask if user wants to configure verification token (optional, from Event Subscriptions page) — if yes, write to config.bot.verification_token in ~/zylos/components/feishu/config.json, then pm2 restart zylos-feishu."
+next-steps: "BEFORE starting the service: 1) Ask user which connection mode to use: 'websocket' (Feishu SDK long connection, simpler setup) or 'webhook' (HTTP webhook, requires public URL). Write choice to connection_mode in ~/zylos/components/feishu/config.json. 2) If WEBHOOK mode: a) verification_token is REQUIRED — ask user to get it from open.feishu.cn/app Event Subscriptions page, write to config.bot.verification_token. b) encrypt_key is optional — if user provides it, write to config.bot.encrypt_key. c) Read domain from ~/zylos/.zylos/config.json and tell user to set Request URL: https://{domain}/feishu/webhook in Event Subscriptions. 3) If WEBSOCKET mode: tell user to go to open.feishu.cn/app Event Subscriptions and select long connection (长连接) mode. No webhook URL or verification token needed. 4) Both modes: user must enable Bot capability and subscribe to im.message.receive_v1 event. 5) Start the service (pm2 restart zylos-feishu)."
 
 http_routes:
   - path: /feishu/webhook
@@ -152,55 +152,55 @@ FEISHU_APP_SECRET=your_app_secret
 Get App ID and App Secret from your app's Credentials page:
 - Feishu: [open.feishu.cn/app](https://open.feishu.cn/app)
 
-### 2. Console Configuration
+### 2. Connection Mode
 
-In the Feishu developer console:
-- Feishu: [open.feishu.cn/app](https://open.feishu.cn/app)
-
-1. **Enable Bot capability**: Add capabilities -> Bot
-2. **Subscribe to events**: Event subscriptions -> Add `im.message.receive_v1`
-3. **Set Request URL**: Event subscriptions -> Request URL -> `https://<your-domain>/feishu/webhook`
-
-### 3. Event Security (Optional)
-
-Feishu provides two security mechanisms for webhook events. You can use either or both.
-
-**Verification Token** — validates that requests come from Feishu:
-
-In the console: Event subscriptions -> Verification Token. Add to config:
+Choose a connection mode in `~/zylos/components/feishu/config.json`:
 
 ```json
 {
-  "bot": {
-    "verification_token": "your_verification_token_from_feishu"
-  }
+  "connection_mode": "websocket"
 }
 ```
 
-**Encrypt Key** — encrypts event payloads using AES-256-CBC:
+| Mode | How it works | Pros | Cons |
+|------|-------------|------|------|
+| `websocket` | SDK WSClient long connection to Feishu servers | No public URL needed, simpler setup | Requires SDK support |
+| `webhook` | HTTP server receives POST events from Feishu | Standard HTTP, works everywhere | Requires public URL + Caddy route |
 
-In the console: Event subscriptions -> Encrypt Key. Add to config:
+### 3. Console Configuration
 
-```json
-{
-  "bot": {
-    "encrypt_key": "your_encrypt_key_from_feishu"
-  }
-}
-```
+In the Feishu developer console ([open.feishu.cn/app](https://open.feishu.cn/app)):
 
-Both can be set together:
+**Both modes:**
+1. Enable **Bot** capability (添加应用能力 -> 机器人)
+2. Subscribe to event: `im.message.receive_v1`
 
-```json
-{
-  "bot": {
-    "verification_token": "your_token",
-    "encrypt_key": "your_key"
-  }
-}
-```
+**WebSocket mode:**
+3. In Event Subscriptions, select **长连接** (long connection) mode
+4. No Request URL or verification token needed
 
-### Cloudflare Users
+**Webhook mode:**
+3. In Event Subscriptions, select **webhook** mode
+4. Set Request URL: `https://<your-domain>/feishu/webhook`
+5. Copy the **Verification Token** (required) and save to config:
+   ```json
+   {
+     "bot": {
+       "verification_token": "your_token_from_console"
+     }
+   }
+   ```
+6. Optionally copy the **Encrypt Key** for payload encryption:
+   ```json
+   {
+     "bot": {
+       "verification_token": "your_token",
+       "encrypt_key": "your_encrypt_key"
+     }
+   }
+   ```
+
+### Cloudflare Users (Webhook mode)
 
 If your domain is behind Cloudflare proxy with Flexible SSL mode, Caddy's automatic HTTPS will cause a redirect loop. Options:
 
