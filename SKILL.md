@@ -21,8 +21,8 @@ lifecycle:
     - data/
 
 upgrade:
-  repo: null
-  branch: null
+  repo: zylos-ai/zylos-feishu
+  branch: main
 
 config:
   required:
