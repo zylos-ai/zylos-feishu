@@ -54,6 +54,12 @@ if (!config.enabled) {
   process.exit(0);
 }
 
+if (connectionMode === 'webhook' && !config.bot?.verification_token) {
+  console.error(`[feishu] ERROR: bot.verification_token is not configured (required for webhook mode).`);
+  console.error(`[feishu] Set it in ~/zylos/components/feishu/config.json (get from developer console → Event Subscriptions).`);
+  process.exit(1);
+}
+
 // Watch for config changes
 watchConfig((newConfig) => {
   console.log(`[feishu] Config reloaded`);
@@ -598,12 +604,14 @@ function startWebhook(creds) {
 
     // Verify token (required for webhook mode)
     const verificationToken = config.bot?.verification_token;
-    if (verificationToken) {
-      const eventToken = event.token || event.header?.token;
-      if (eventToken !== verificationToken) {
-        console.warn(`[feishu] Verification token mismatch, rejecting request`);
-        return res.status(403).json({ error: 'Token verification failed' });
-      }
+    if (!verificationToken) {
+      console.error('[feishu] verification_token not configured — rejecting request. Set bot.verification_token in config.json.');
+      return res.status(500).json({ error: 'Server misconfigured: verification_token missing' });
+    }
+    const eventToken = event.token || event.header?.token;
+    if (eventToken !== verificationToken) {
+      console.warn(`[feishu] Verification token mismatch, rejecting request`);
+      return res.status(403).json({ error: 'Token verification failed' });
     }
 
     // URL Verification Challenge
