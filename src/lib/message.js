@@ -374,7 +374,7 @@ export async function sendMarkdownCard(receiveId, text, receiveIdType = 'chat_id
 /**
  * Reply to a message with a markdown card.
  */
-export async function replyWithMarkdownCard(messageId, text) {
+export async function replyMarkdownCard(messageId, text) {
   const client = getClient();
   const card = buildMarkdownCard(text);
 

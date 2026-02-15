@@ -124,6 +124,47 @@ function saveUserCache(cache) {
 let userCache = loadUserCache();
 let groupCursors = loadCursors();
 
+// ============================================================
+// In-memory chat history (replaces file-based context building)
+// File logs are kept for audit; this Map is used for fast context.
+// ============================================================
+const DEFAULT_HISTORY_LIMIT = 10;
+const chatHistories = new Map(); // Map<chatId, Array<{ message_id, user_name, user_id, text, timestamp }>>
+
+/**
+ * Record a message entry into in-memory chat history.
+ * Caps entries at the configured limit per chat.
+ */
+function recordHistoryEntry(chatId, entry) {
+  if (!chatHistories.has(chatId)) {
+    chatHistories.set(chatId, []);
+  }
+  const history = chatHistories.get(chatId);
+  history.push(entry);
+  const limit = config.message?.context_messages || DEFAULT_HISTORY_LIMIT;
+  // Cap at 2x limit to avoid unbounded growth; trim to limit when reading
+  if (history.length > limit * 2) {
+    chatHistories.set(chatId, history.slice(-limit));
+  }
+}
+
+/**
+ * Get recent context messages from in-memory history.
+ * Excludes the current message itself.
+ */
+function getInMemoryContext(chatId, currentMessageId) {
+  const history = chatHistories.get(chatId);
+  if (!history || history.length === 0) return [];
+
+  const limit = config.message?.context_messages || DEFAULT_HISTORY_LIMIT;
+  const MIN_CONTEXT = 5;
+
+  // Filter out the current message and get recent entries
+  const filtered = history.filter(m => m.message_id !== currentMessageId);
+  const count = Math.max(MIN_CONTEXT, Math.min(limit, filtered.length));
+  return filtered.slice(-count);
+}
+
 // Resolve user_id to name
 async function resolveUserName(userId) {
   if (!userId) return 'unknown';
@@ -156,6 +197,7 @@ function decrypt(encrypt, encryptKey) {
 }
 
 // Log message (mentions resolved to real names for readable context)
+// Also records to in-memory chat history for fast context building.
 async function logMessage(chatType, chatId, userId, openId, text, messageId, timestamp, mentions) {
   const userName = await resolveUserName(userId);
   const resolvedText = resolveMentions(text, mentions);
@@ -169,41 +211,22 @@ async function logMessage(chatType, chatId, userId, openId, text, messageId, tim
   };
   const logLine = JSON.stringify(logEntry) + '\n';
 
+  // File log for audit
   const logId = chatType === 'p2p' ? userId : chatId;
   const logFile = path.join(LOGS_DIR, `${logId}.log`);
   fs.appendFileSync(logFile, logLine);
+
+  // In-memory history for context (group chats only)
+  if (chatType === 'group') {
+    recordHistoryEntry(chatId, logEntry);
+  }
+
   console.log(`[feishu] Logged: [${userName}] ${(resolvedText || '').substring(0, 30)}...`);
 }
 
-// Get group context messages
+// Get group context messages (delegates to in-memory history)
 function getGroupContext(chatId, currentMessageId) {
-  const logFile = path.join(LOGS_DIR, `${chatId}.log`);
-  if (!fs.existsSync(logFile)) return [];
-
-  const MIN_CONTEXT = 5;
-  const MAX_CONTEXT = config.message?.context_messages || 10;
-  const cursor = groupCursors[chatId] || null;
-  const lines = fs.readFileSync(logFile, 'utf-8').trim().split('\n').filter(l => l);
-
-  const messages = lines.map(line => {
-    try { return JSON.parse(line); } catch { return null; }
-  }).filter(m => m);
-
-  let cursorIndex = -1;
-  let currentIndex = messages.length - 1;
-
-  if (cursor) {
-    cursorIndex = messages.findIndex(m => m.message_id === cursor);
-  }
-
-  let contextMessages = messages.slice(cursorIndex + 1, currentIndex);
-
-  if (contextMessages.length < MIN_CONTEXT && currentIndex > 0) {
-    const startIndex = Math.max(0, currentIndex - MIN_CONTEXT);
-    contextMessages = messages.slice(startIndex, currentIndex);
-  }
-
-  return contextMessages.slice(-MAX_CONTEXT);
+  return getInMemoryContext(chatId, currentMessageId);
 }
 
 function updateCursor(chatId, messageId) {
