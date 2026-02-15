@@ -36,14 +36,16 @@ export const DEFAULT_CONFIG = {
     private_users: [],
     group_users: []
   },
-  // Group whitelist (enabled by default for security)
-  group_whitelist: { enabled: true },
-  // Allowed groups (respond to @mentions)
-  // Format: [{chat_id: "oc_xxx", name: "Group Name", added_at: "ISO timestamp"}]
-  allowed_groups: [],
-  // Smart groups (receive all messages, no @mention needed)
-  // Format: [{chat_id: "oc_xxx", name: "Group Name", added_at: "ISO timestamp"}]
-  smart_groups: [],
+  // Group policy: 'open' (all groups), 'allowlist' (only configured groups), 'disabled' (no groups)
+  groupPolicy: 'allowlist',
+  // Per-group configuration map
+  // Format: { "oc_xxx": { name, mode, requireMention, allowFrom, historyLimit } }
+  // mode: "mention" (respond to @mentions) or "smart" (receive all messages)
+  groups: {},
+  // Legacy fields (kept for backward compatibility, migrated to groups on upgrade)
+  // group_whitelist: { enabled: true },
+  // allowed_groups: [],
+  // smart_groups: [],
   // Proxy settings (optional)
   proxy: {
     enabled: false,

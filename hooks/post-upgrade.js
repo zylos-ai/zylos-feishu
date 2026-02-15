@@ -80,28 +80,82 @@ if (fs.existsSync(configPath)) {
       }
     }
 
-    // Migration 6: Ensure allowed_groups array
-    if (config.allowed_groups === undefined) {
-      config.allowed_groups = [];
+    // Migration 6: Migrate legacy allowed_groups/smart_groups → groups map + groupPolicy
+    if (!config.groups && (Array.isArray(config.allowed_groups) || Array.isArray(config.smart_groups))) {
+      const groups = {};
+
+      // Migrate allowed_groups → mode: "mention"
+      if (Array.isArray(config.allowed_groups)) {
+        for (const g of config.allowed_groups) {
+          if (g.chat_id) {
+            groups[g.chat_id] = {
+              name: g.name || '',
+              mode: 'mention',
+              requireMention: true,
+            };
+          }
+        }
+      }
+
+      // Migrate smart_groups → mode: "smart" (override if already in map)
+      if (Array.isArray(config.smart_groups)) {
+        for (const g of config.smart_groups) {
+          if (g.chat_id) {
+            groups[g.chat_id] = {
+              name: g.name || '',
+              mode: 'smart',
+              requireMention: false,
+            };
+          }
+        }
+      }
+
+      config.groups = groups;
+
+      // Set groupPolicy based on existing group_whitelist setting
+      if (config.group_whitelist?.enabled === false) {
+        config.groupPolicy = 'open';
+      } else {
+        config.groupPolicy = 'allowlist';
+      }
+
+      // Preserve legacy fields as backup
+      if (config.allowed_groups?.length > 0) {
+        config._legacy_allowed_groups = config.allowed_groups;
+      }
+      if (config.smart_groups?.length > 0) {
+        config._legacy_smart_groups = config.smart_groups;
+      }
+
+      // Remove legacy fields
+      delete config.allowed_groups;
+      delete config.smart_groups;
+      delete config.group_whitelist;
+
       migrated = true;
-      migrations.push('Added allowed_groups array');
+      migrations.push(`Migrated ${Object.keys(groups).length} groups to new groups map format`);
     }
 
-    // Migration 7: Ensure smart_groups array
-    if (config.smart_groups === undefined) {
-      config.smart_groups = [];
+    // Ensure groups and groupPolicy exist
+    if (config.groups === undefined) {
+      config.groups = {};
       migrated = true;
-      migrations.push('Added smart_groups array');
+      migrations.push('Added groups map');
+    }
+    if (config.groupPolicy === undefined) {
+      config.groupPolicy = 'allowlist';
+      migrated = true;
+      migrations.push('Added groupPolicy (default: allowlist)');
     }
 
-    // Migration 8: Ensure proxy settings
+    // Migration 7 (legacy): Ensure proxy settings
     if (!config.proxy) {
       config.proxy = { enabled: false, host: '', port: 0 };
       migrated = true;
       migrations.push('Added proxy settings');
     }
 
-    // Migration 9: Ensure message settings
+    // Migration 8: Ensure message settings
     if (!config.message) {
       config.message = { context_messages: 10 };
       migrated = true;
@@ -118,6 +172,73 @@ if (fs.existsSync(configPath)) {
         migrated = true;
         migrations.push('Removed unused message.max_length');
       }
+    }
+
+    // Migration 10: Migrate legacy group config to new groups map
+    if ((Array.isArray(config.allowed_groups) && config.allowed_groups.length > 0) ||
+        (Array.isArray(config.smart_groups) && config.smart_groups.length > 0) ||
+        (config.group_whitelist !== undefined && !config.groupPolicy)) {
+
+      if (!config.groups) config.groups = {};
+
+      // Migrate allowed_groups → groups with mode: "mention"
+      if (Array.isArray(config.allowed_groups) && config.allowed_groups.length > 0) {
+        for (const g of config.allowed_groups) {
+          if (g.chat_id && !config.groups[g.chat_id]) {
+            config.groups[g.chat_id] = {
+              name: g.name || 'unnamed',
+              mode: 'mention',
+              requireMention: true,
+              added_at: g.added_at || new Date().toISOString()
+            };
+            migrations.push(`Migrated allowed_group ${g.chat_id} → groups[mention]`);
+          }
+        }
+        config._legacy_allowed_groups = config.allowed_groups;
+        delete config.allowed_groups;
+        migrated = true;
+      }
+
+      // Migrate smart_groups → groups with mode: "smart"
+      if (Array.isArray(config.smart_groups) && config.smart_groups.length > 0) {
+        for (const g of config.smart_groups) {
+          if (g.chat_id) {
+            config.groups[g.chat_id] = {
+              name: g.name || config.groups[g.chat_id]?.name || 'unnamed',
+              mode: 'smart',
+              requireMention: false,
+              added_at: g.added_at || config.groups[g.chat_id]?.added_at || new Date().toISOString()
+            };
+            migrations.push(`Migrated smart_group ${g.chat_id} → groups[smart]`);
+          }
+        }
+        config._legacy_smart_groups = config.smart_groups;
+        delete config.smart_groups;
+        migrated = true;
+      }
+
+      // Migrate group_whitelist → groupPolicy
+      if (config.group_whitelist !== undefined && !config.groupPolicy) {
+        config.groupPolicy = config.group_whitelist?.enabled !== false ? 'allowlist' : 'open';
+        migrations.push(`Migrated group_whitelist → groupPolicy=${config.groupPolicy}`);
+        config._legacy_group_whitelist = config.group_whitelist;
+        delete config.group_whitelist;
+        migrated = true;
+      }
+    }
+
+    // Ensure groupPolicy exists
+    if (!config.groupPolicy) {
+      config.groupPolicy = 'allowlist';
+      migrated = true;
+      migrations.push('Added groupPolicy=allowlist');
+    }
+
+    // Ensure groups map exists
+    if (!config.groups) {
+      config.groups = {};
+      migrated = true;
+      migrations.push('Added groups map');
     }
 
     // Save if migrated

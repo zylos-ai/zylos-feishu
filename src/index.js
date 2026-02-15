@@ -169,7 +169,7 @@ let groupCursors = loadCursors();
 // In-memory chat history (replaces file-based context building)
 // File logs are kept for audit; this Map is used for fast context.
 // ============================================================
-const DEFAULT_HISTORY_LIMIT = 10;
+const DEFAULT_HISTORY_LIMIT = 20;
 const chatHistories = new Map(); // Map<chatId, Array<{ message_id, user_name, user_id, text, timestamp }>>
 
 /**
@@ -280,6 +280,81 @@ function getGroupContext(chatId, currentMessageId) {
 function updateCursor(chatId, messageId) {
   groupCursors[chatId] = messageId;
   saveCursors(groupCursors);
+}
+
+// ============================================================
+// Group policy helpers (references OpenClaw policy.ts patterns)
+// ============================================================
+
+/**
+ * Resolve per-group config from the groups map.
+ * @param {string} chatId
+ * @returns {object|undefined} Group config or undefined
+ */
+function resolveGroupConfig(chatId) {
+  const groups = config.groups || {};
+  return groups[chatId];
+}
+
+/**
+ * Check if a group is allowed based on groupPolicy and config.
+ * Also handles backward compat with legacy allowed_groups/smart_groups.
+ */
+function isGroupAllowed(chatId) {
+  const groupPolicy = config.groupPolicy || 'allowlist';
+
+  if (groupPolicy === 'disabled') return false;
+  if (groupPolicy === 'open') return true;
+
+  // allowlist mode: check groups map
+  const groupConfig = resolveGroupConfig(chatId);
+  if (groupConfig) return true;
+
+  // Backward compat: check legacy arrays if groups map doesn't have this chat
+  const legacyAllowed = (config.allowed_groups || []).some(g => g.chat_id === chatId);
+  const legacySmart = (config.smart_groups || []).some(g => g.chat_id === chatId);
+  if (legacyAllowed || legacySmart) return true;
+
+  // Legacy group_whitelist logic
+  if (config.group_whitelist?.enabled === false) return true;
+
+  return false;
+}
+
+/**
+ * Check if a group is in "smart" mode (receives all messages without @mention).
+ */
+function isSmartGroup(chatId) {
+  const groupConfig = resolveGroupConfig(chatId);
+  if (groupConfig) {
+    return groupConfig.mode === 'smart' || groupConfig.requireMention === false;
+  }
+  // Legacy fallback
+  return (config.smart_groups || []).some(g => g.chat_id === chatId);
+}
+
+/**
+ * Check if a sender is allowed in a specific group.
+ * If the group has an allowFrom list, check it; otherwise allow all.
+ */
+function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) {
+  const groupConfig = resolveGroupConfig(chatId);
+  if (!groupConfig?.allowFrom || groupConfig.allowFrom.length === 0) {
+    return true; // No per-group sender restriction
+  }
+  const allowed = groupConfig.allowFrom.map(s => String(s).toLowerCase());
+  if (allowed.includes('*')) return true;
+  if (senderUserId && allowed.includes(senderUserId.toLowerCase())) return true;
+  if (senderOpenId && allowed.includes(senderOpenId.toLowerCase())) return true;
+  return false;
+}
+
+/**
+ * Get the history limit for a specific group.
+ */
+function getGroupHistoryLimit(chatId) {
+  const groupConfig = resolveGroupConfig(chatId);
+  return groupConfig?.historyLimit || config.message?.context_messages || DEFAULT_HISTORY_LIMIT;
 }
 
 // Check if bot is mentioned
@@ -653,34 +728,46 @@ async function handleMessage(data) {
   // Group chat handling
   if (chatType === 'group') {
     const mentioned = isBotMentioned(mentions, botOpenId);
-    const isSmartGroup = (config.smart_groups || []).some(g => g.chat_id === chatId);
-    const allowedGroups = config.allowed_groups || [];
-    const whitelistEnabled = config.group_whitelist?.enabled !== false;
-    const isAllowedGroup = whitelistEnabled
-      ? allowedGroups.some(g => g.chat_id === chatId)
-      : true;
+    const smart = isSmartGroup(chatId);
 
-    if (!isSmartGroup && !mentioned) {
+    // Check group policy
+    if (!isGroupAllowed(chatId)) {
+      const senderIsOwner = isOwner(senderUserId, senderOpenId);
+      if (!senderIsOwner) {
+        console.log(`[feishu] Group ${chatId} not allowed by policy, ignoring`);
+        return;
+      }
+    }
+
+    // In non-smart groups, require @mention
+    if (!smart && !mentioned) {
       console.log(`[feishu] Group message without @mention, logged only`);
       return;
     }
 
-    if (!isSmartGroup) {
+    // Check per-group sender allowlist
+    if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId)) {
       const senderIsOwner = isOwner(senderUserId, senderOpenId);
-
-      if (!isAllowedGroup && !senderIsOwner) {
-        console.log(`[feishu] @mention in non-allowed group ${chatId}, ignoring`);
+      if (!senderIsOwner) {
+        console.log(`[feishu] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
         return;
       }
+    }
+
+    // For non-smart groups, also check global whitelist
+    if (!smart) {
+      const senderIsOwner = isOwner(senderUserId, senderOpenId);
       if (!senderIsOwner && !isWhitelisted(senderUserId, senderOpenId)) {
         console.log(`[feishu] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
         return;
       }
     }
 
-    console.log(`[feishu] ${isSmartGroup ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
+    console.log(`[feishu] ${smart ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
     const contextMessages = getGroupContext(chatId, messageId);
     updateCursor(chatId, messageId);
+    // Clear in-memory history after consuming context (will be rebuilt from subsequent messages)
+    chatHistories.delete(chatId);
 
     const senderName = await resolveUserName(senderUserId);
     const cleanText = resolveMentions(text, mentions, { stripBot: true, botOpenId });
