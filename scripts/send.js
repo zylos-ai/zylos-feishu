@@ -17,7 +17,7 @@ import path from 'path';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig } from '../src/lib/config.js';
-import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage } from '../src/lib/message.js';
+import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
 
 const MAX_LENGTH = 2000;  // Feishu message max length
 
@@ -65,8 +65,18 @@ if (!config.enabled) {
 // Parse media prefix
 const mediaMatch = message.match(/^\[MEDIA:(\w+)\](.+)$/);
 
+/** Detect if text contains markdown elements that benefit from card rendering */
+function shouldUseCard(text) {
+  // Code blocks (fenced with ```)
+  if (/```[\s\S]*?```/.test(text)) return true;
+  // Markdown tables (|...|  followed by |---|)
+  if (/\|.+\|[\r\n]+\|[-:| ]+\|/.test(text)) return true;
+  return false;
+}
+
 /**
- * Split long message into chunks
+ * Split long message into chunks (markdown-aware).
+ * Ensures code blocks (```) are not split across chunks.
  */
 function splitMessage(text, maxLength) {
   if (text.length <= maxLength) return [text];
@@ -80,18 +90,52 @@ function splitMessage(text, maxLength) {
       break;
     }
 
-    let chunk = remaining.substring(0, maxLength);
     let breakAt = maxLength;
 
-    // Try to break at last newline
-    const lastNewline = chunk.lastIndexOf('\n');
-    if (lastNewline > maxLength * 0.3) {
-      breakAt = lastNewline;
+    // Check if we're inside a code block at the break point
+    const segment = remaining.substring(0, breakAt);
+    const fenceMatches = segment.match(/```/g);
+    const insideCodeBlock = fenceMatches && fenceMatches.length % 2 !== 0;
+
+    if (insideCodeBlock) {
+      // Find the start of this unclosed code block and break before it
+      const lastFenceStart = segment.lastIndexOf('```');
+      // Look for a newline before the code fence to break cleanly
+      const lineBeforeFence = remaining.lastIndexOf('\n', lastFenceStart - 1);
+      if (lineBeforeFence > maxLength * 0.2) {
+        breakAt = lineBeforeFence;
+      } else {
+        // Code block is too large; find its end and include the whole block
+        const fenceEnd = remaining.indexOf('```', lastFenceStart + 3);
+        if (fenceEnd !== -1) {
+          const blockEnd = remaining.indexOf('\n', fenceEnd + 3);
+          breakAt = blockEnd !== -1 ? blockEnd + 1 : fenceEnd + 3;
+        }
+        // If block end is still beyond 2x maxLength, fall back to hard break
+        if (breakAt > maxLength * 2) {
+          breakAt = maxLength;
+        }
+      }
     } else {
-      // Try to break at last space
-      const lastSpace = chunk.lastIndexOf(' ');
-      if (lastSpace > maxLength * 0.3) {
-        breakAt = lastSpace;
+      // Not inside code block: try to break at a clean boundary
+      const chunk = remaining.substring(0, breakAt);
+
+      // Prefer breaking at double newline (paragraph boundary)
+      const lastParaBreak = chunk.lastIndexOf('\n\n');
+      if (lastParaBreak > maxLength * 0.3) {
+        breakAt = lastParaBreak + 1;
+      } else {
+        // Try to break at last newline
+        const lastNewline = chunk.lastIndexOf('\n');
+        if (lastNewline > maxLength * 0.3) {
+          breakAt = lastNewline;
+        } else {
+          // Try to break at last space
+          const lastSpace = chunk.lastIndexOf(' ');
+          if (lastSpace > maxLength * 0.3) {
+            breakAt = lastSpace;
+          }
+        }
       }
     }
 
@@ -105,21 +149,32 @@ function splitMessage(text, maxLength) {
 /**
  * Send text message with auto-chunking.
  * Uses reply API when rootId or msgId is available from structured endpoint.
+ * Auto-detects content with code blocks or tables and sends as interactive card.
  */
 async function sendText(endpoint, text) {
+  const useCard = shouldUseCard(text);
   const chunks = splitMessage(text, MAX_LENGTH);
   const { root: rootId, msg: msgId } = parsedEndpoint;
 
   for (let i = 0; i < chunks.length; i++) {
     let result;
+    const isFirstChunk = i === 0;
+    const replyToId = rootId || msgId;
 
-    if (i === 0 && (rootId || msgId)) {
-      // First chunk: reply to the thread root (for topic routing) or trigger message
-      const replyToId = rootId || msgId;
-      result = await replyToMessage(replyToId, chunks[i]);
+    if (useCard) {
+      // Send as interactive card (markdown element) for rich content
+      if (isFirstChunk && replyToId) {
+        result = await replyMarkdownCard(replyToId, chunks[i]);
+      } else {
+        result = await sendMarkdownCard(endpoint, chunks[i]);
+      }
     } else {
-      // Subsequent chunks or no reply context: send directly to chat
-      result = await sendToGroup(endpoint, chunks[i]);
+      // Send as plain text
+      if (isFirstChunk && replyToId) {
+        result = await replyToMessage(replyToId, chunks[i]);
+      } else {
+        result = await sendToGroup(endpoint, chunks[i]);
+      }
     }
 
     if (!result.success) {
