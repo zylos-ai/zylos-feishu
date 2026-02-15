@@ -13,11 +13,12 @@
  */
 
 import dotenv from 'dotenv';
+import fs from 'fs';
 import path from 'path';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig } from '../src/lib/config.js';
-import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
+import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyWithMarkdownCard } from '../src/lib/message.js';
 
 const MAX_LENGTH = 2000;  // Feishu message max length
 
@@ -220,6 +221,20 @@ async function sendMedia(endpoint, type, filePath) {
   }
 }
 
+/**
+ * Write a typing-done marker file so index.js can remove the typing indicator.
+ * The marker file name is the original trigger message ID.
+ */
+function markTypingDone(msgId) {
+  if (!msgId) return;
+  try {
+    fs.mkdirSync(TYPING_DIR, { recursive: true });
+    fs.writeFileSync(path.join(TYPING_DIR, `${msgId}.done`), String(Date.now()));
+  } catch {
+    // Non-critical
+  }
+}
+
 async function send() {
   try {
     if (mediaMatch) {
@@ -228,6 +243,8 @@ async function send() {
     } else {
       await sendText(endpointId, message);
     }
+    // Mark the trigger message as replied (for typing indicator removal)
+    markTypingDone(parsedEndpoint.msg);
     console.log('Message sent successfully');
     process.exit(0);
   } catch (err) {

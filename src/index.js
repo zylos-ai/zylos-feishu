@@ -19,7 +19,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials } from './lib/config.js';
-import { downloadImage, downloadFile, sendMessage, extractPermissionError } from './lib/message.js';
+import { downloadImage, downloadFile, sendMessage, extractPermissionError, addReaction, removeReaction } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 
 // C4 receive interface path
@@ -106,6 +106,88 @@ function loadCursors() {
 function saveCursors(cursors) {
   fs.writeFileSync(CURSORS_PATH, JSON.stringify(cursors, null, 2));
 }
+
+// ============================================================
+// Typing indicator (emoji reaction on message while processing)
+// ============================================================
+const TYPING_EMOJI = 'OnIt';  // ⏳-like indicator; Feishu emoji type
+const TYPING_TIMEOUT = 120 * 1000; // 120 seconds max
+
+// Track active typing indicators: Map<messageId, { reactionId, timer }>
+const activeTypingIndicators = new Map();
+
+/**
+ * Add a typing indicator (emoji reaction) to a message.
+ * Returns the state needed to remove it later.
+ */
+async function addTypingIndicator(messageId) {
+  try {
+    const result = await addReaction(messageId, TYPING_EMOJI);
+    if (result.success && result.reactionId) {
+      // Set auto-remove timeout
+      const timer = setTimeout(() => {
+        removeTypingIndicator(messageId);
+      }, TYPING_TIMEOUT);
+
+      activeTypingIndicators.set(messageId, {
+        reactionId: result.reactionId,
+        timer,
+      });
+
+      return true;
+    }
+  } catch (err) {
+    // Non-critical; silently fail
+    console.log(`[feishu] Failed to add typing indicator: ${err.message}`);
+  }
+  return false;
+}
+
+/**
+ * Remove a typing indicator from a message.
+ */
+async function removeTypingIndicator(messageId) {
+  const state = activeTypingIndicators.get(messageId);
+  if (!state) return;
+
+  activeTypingIndicators.delete(messageId);
+  clearTimeout(state.timer);
+
+  try {
+    await removeReaction(messageId, state.reactionId);
+  } catch (err) {
+    // Non-critical; silently fail
+    console.log(`[feishu] Failed to remove typing indicator: ${err.message}`);
+  }
+}
+
+/**
+ * Check for typing-done marker files written by send.js.
+ * When found, remove the typing indicator and clean up the marker.
+ */
+const TYPING_DIR = path.join(DATA_DIR, 'typing');
+fs.mkdirSync(TYPING_DIR, { recursive: true });
+
+function checkTypingDoneMarkers() {
+  try {
+    const files = fs.readdirSync(TYPING_DIR);
+    for (const file of files) {
+      if (!file.endsWith('.done')) continue;
+      const messageId = file.replace('.done', '');
+      if (activeTypingIndicators.has(messageId)) {
+        removeTypingIndicator(messageId);
+        console.log(`[feishu] Typing indicator removed for ${messageId} (reply sent)`);
+      }
+      // Clean up marker file
+      try {
+        fs.unlinkSync(path.join(TYPING_DIR, file));
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+}
+
+// Poll for typing-done markers every 2 seconds
+setInterval(checkTypingDoneMarkers, 2000);
 
 // ============================================================
 // Permission error tracking (cooldown to avoid spam)
@@ -721,8 +803,12 @@ async function handleMessage(data) {
       return;
     }
 
+    // Add typing indicator
+    addTypingIndicator(messageId);
+
     const senderName = await resolveUserName(senderUserId);
     const rejectReply = (errMsg) => {
+      removeTypingIndicator(messageId);
       sendMessage(chatId, errMsg).catch(e => console.error('[feishu] reject reply failed:', e.message));
     };
 
@@ -811,9 +897,13 @@ async function handleMessage(data) {
     // Clear in-memory history after consuming context (will be rebuilt from subsequent messages)
     chatHistories.delete(chatId);
 
+    // Add typing indicator before processing
+    addTypingIndicator(messageId);
+
     const senderName = await resolveUserName(senderUserId);
     const cleanText = resolveMentions(text, mentions, { stripBot: true, botOpenId });
     const groupRejectReply = (errMsg) => {
+      removeTypingIndicator(messageId);
       sendMessage(chatId, errMsg).catch(e => console.error('[feishu] reject reply failed:', e.message));
     };
 
