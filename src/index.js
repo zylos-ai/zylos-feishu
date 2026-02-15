@@ -47,6 +47,29 @@ fs.mkdirSync(MEDIA_DIR, { recursive: true });
 const CURSORS_PATH = path.join(DATA_DIR, 'group-cursors.json');
 const USER_CACHE_PATH = path.join(DATA_DIR, 'user-cache.json');
 
+// ============================================================
+// Message deduplication (shared by websocket and webhook modes)
+// ============================================================
+const DEDUP_TTL = 5 * 60 * 1000; // 5 minutes
+const processedMessages = new Map();
+
+function isDuplicate(messageId) {
+  if (!messageId) return false;
+  if (processedMessages.has(messageId)) {
+    console.log(`[feishu] Duplicate message_id ${messageId}, skipping`);
+    return true;
+  }
+  processedMessages.set(messageId, Date.now());
+  // Cleanup old entries
+  if (processedMessages.size > 200) {
+    const now = Date.now();
+    for (const [id, ts] of processedMessages) {
+      if (now - ts > DEDUP_TTL) processedMessages.delete(id);
+    }
+  }
+  return false;
+}
+
 console.log(`[feishu] Config loaded, enabled: ${config.enabled}`);
 
 if (!config.enabled) {
@@ -272,9 +295,52 @@ function sendToC4(source, endpoint, content, onReject) {
 }
 
 /**
+ * Build structured endpoint string for C4.
+ * Format: chatId|root:rootId|msg:messageId
+ * C4 treats endpoint as opaque string; send.js parses it.
+ */
+function buildEndpoint(chatId, { rootId, messageId } = {}) {
+  let endpoint = chatId;
+  if (rootId) {
+    endpoint += `|root:${rootId}`;
+  }
+  if (messageId) {
+    endpoint += `|msg:${messageId}`;
+  }
+  return endpoint;
+}
+
+/**
+ * Fetch content of a quoted/replied message (best-effort).
+ * Used to provide context when user replies to a specific message.
+ */
+async function fetchQuotedMessage(messageId) {
+  try {
+    const { getClient } = await import('./lib/client.js');
+    const client = getClient();
+    const res = await client.im.message.get({
+      path: { message_id: messageId },
+    });
+    if (res.code === 0 && res.data?.items?.[0]) {
+      const msg = res.data.items[0];
+      const content = JSON.parse(msg.body?.content || '{}');
+      if (msg.msg_type === 'text') return content.text || '';
+      if (msg.msg_type === 'post') {
+        const { text } = extractPostText(JSON.parse(msg.body?.content || '{}').content || [], messageId);
+        return text;
+      }
+      return `[${msg.msg_type} message]`;
+    }
+  } catch (err) {
+    console.log(`[feishu] Failed to fetch quoted message ${messageId}: ${err.message}`);
+  }
+  return null;
+}
+
+/**
  * Format message for C4
  */
-function formatMessage(chatType, userName, text, contextMessages = [], mediaPath = null) {
+function formatMessage(chatType, userName, text, contextMessages = [], mediaPath = null, { quotedContent } = {}) {
   let prefix = chatType === 'p2p' ? '[Feishu DM]' : '[Feishu GROUP]';
 
   let contextPrefix = '';
@@ -283,7 +349,13 @@ function formatMessage(chatType, userName, text, contextMessages = [], mediaPath
     contextPrefix = `[Group context - recent messages before this @mention:]\n${contextLines}\n\n[Current message:] `;
   }
 
-  let message = `${prefix} ${userName} said: ${contextPrefix}${text}`;
+  // Include quoted message content if replying to a specific message
+  let replyPrefix = '';
+  if (quotedContent) {
+    replyPrefix = `[Replying to: "${quotedContent}"] `;
+  }
+
+  let message = `${prefix} ${userName} said: ${contextPrefix}${replyPrefix}${text}`;
 
   if (mediaPath) {
     message += ` ---- file: ${mediaPath}`;
@@ -349,27 +421,28 @@ function extractPostText(paragraphs, messageId) {
 }
 
 // Extract content from Feishu message
+// Returns imageKeys as array (all images from post messages, or single image)
 function extractMessageContent(message) {
   const msgType = message.message_type;
   const content = JSON.parse(message.content || '{}');
 
   switch (msgType) {
     case 'text':
-      return { text: content.text || '', imageKey: null, fileKey: null, fileName: null };
+      return { text: content.text || '', imageKeys: [], fileKey: null, fileName: null };
     case 'post': {
       if (content.content) {
         const { text, imageKeys } = extractPostText(content.content, message.message_id);
         const fullText = content.title ? `[${content.title}] ${text}` : text;
-        return { text: fullText, imageKey: imageKeys[0] || null, fileKey: null, fileName: null };
+        return { text: fullText, imageKeys, fileKey: null, fileName: null };
       }
-      return { text: '', imageKey: null, fileKey: null, fileName: null };
+      return { text: '', imageKeys: [], fileKey: null, fileName: null };
     }
     case 'image':
-      return { text: '', imageKey: content.image_key, fileKey: null, fileName: null };
+      return { text: '', imageKeys: content.image_key ? [content.image_key] : [], fileKey: null, fileName: null };
     case 'file':
-      return { text: '', imageKey: null, fileKey: content.file_key, fileName: content.file_name || 'unknown' };
+      return { text: '', imageKeys: [], fileKey: content.file_key, fileName: content.file_name || 'unknown' };
     default:
-      return { text: `[${msgType} message]`, imageKey: null, fileKey: null, fileName: null };
+      return { text: `[${msgType} message]`, imageKeys: [], fileKey: null, fileName: null };
   }
 }
 
@@ -418,14 +491,19 @@ async function handleMessage(data) {
   const chatId = message.chat_id;
   const messageId = message.message_id;
   const chatType = message.chat_type;
+  const rootId = message.root_id || null;
+  const parentId = message.parent_id || null;
 
-  const { text, imageKey, fileKey, fileName } = extractMessageContent(message);
+  // Unified dedup check (both websocket and webhook modes)
+  if (isDuplicate(messageId)) return;
+
+  const { text, imageKeys, fileKey, fileName } = extractMessageContent(message);
   console.log(`[feishu] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
 
   // Build log text with file/image metadata
   let logText = text;
-  if (imageKey) {
-    const imageInfo = `[image, image_key: ${imageKey}, msg_id: ${messageId}]`;
+  for (const imgKey of imageKeys) {
+    const imageInfo = `[image, image_key: ${imgKey}, msg_id: ${messageId}]`;
     logText = logText ? `${logText}\n${imageInfo}` : imageInfo;
   }
   if (fileKey) {
@@ -434,6 +512,15 @@ async function handleMessage(data) {
   }
 
   logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, data._timestamp || null, mentions);
+
+  // Build structured endpoint with routing metadata
+  const endpoint = buildEndpoint(chatId, { rootId, messageId });
+
+  // Fetch quoted message content if replying to a specific message (best-effort)
+  let quotedContent = null;
+  if (parentId) {
+    quotedContent = await fetchQuotedMessage(parentId);
+  }
 
   // Private chat handling
   if (chatType === 'p2p') {
@@ -451,16 +538,24 @@ async function handleMessage(data) {
       sendMessage(chatId, errMsg).catch(e => console.error('[feishu] reject reply failed:', e.message));
     };
 
-    if (imageKey) {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const localPath = path.join(MEDIA_DIR, `feishu-${timestamp}.png`);
-      const result = await downloadImage(messageId, imageKey, localPath);
-      if (result.success) {
-        const msg = formatMessage('p2p', senderName, `[image]${text ? ' ' + text : ''}`, [], localPath);
-        sendToC4('feishu', chatId, msg, rejectReply);
+    // Handle images (lazy download: only when message is being sent to C4)
+    if (imageKeys.length > 0) {
+      const mediaPaths = [];
+      for (const imgKey of imageKeys) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const localPath = path.join(MEDIA_DIR, `feishu-${timestamp}-${imgKey.slice(-8)}.png`);
+        const result = await downloadImage(messageId, imgKey, localPath);
+        if (result.success) {
+          mediaPaths.push(localPath);
+        }
+      }
+      if (mediaPaths.length > 0) {
+        const mediaLabel = mediaPaths.length === 1 ? '[image]' : `[${mediaPaths.length} images]`;
+        const msg = formatMessage('p2p', senderName, `${mediaLabel}${text ? ' ' + text : ''}`, [], mediaPaths[0], { quotedContent });
+        sendToC4('feishu', endpoint, msg, rejectReply);
       } else {
-        const msg = formatMessage('p2p', senderName, '[image download failed]');
-        sendToC4('feishu', chatId, msg, rejectReply);
+        const msg = formatMessage('p2p', senderName, '[image download failed]', [], null, { quotedContent });
+        sendToC4('feishu', endpoint, msg, rejectReply);
       }
       return;
     }
@@ -470,17 +565,17 @@ async function handleMessage(data) {
       const localPath = path.join(MEDIA_DIR, `feishu-${timestamp}-${fileName}`);
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
-        const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath);
-        sendToC4('feishu', chatId, msg, rejectReply);
+        const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath, { quotedContent });
+        sendToC4('feishu', endpoint, msg, rejectReply);
       } else {
-        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`);
-        sendToC4('feishu', chatId, msg, rejectReply);
+        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`, [], null, { quotedContent });
+        sendToC4('feishu', endpoint, msg, rejectReply);
       }
       return;
     }
 
-    const msg = formatMessage('p2p', senderName, text);
-    sendToC4('feishu', chatId, msg, rejectReply);
+    const msg = formatMessage('p2p', senderName, text, [], null, { quotedContent });
+    sendToC4('feishu', endpoint, msg, rejectReply);
     return;
   }
 
@@ -522,13 +617,21 @@ async function handleMessage(data) {
       sendMessage(chatId, errMsg).catch(e => console.error('[feishu] reject reply failed:', e.message));
     };
 
-    if (imageKey) {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const localPath = path.join(MEDIA_DIR, `feishu-group-${timestamp}.png`);
-      const result = await downloadImage(messageId, imageKey, localPath);
-      if (result.success) {
-        const msg = formatMessage('group', senderName, `[image]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath);
-        sendToC4('feishu', chatId, msg, groupRejectReply);
+    // Handle images (lazy download: only for messages being sent to C4)
+    if (imageKeys.length > 0) {
+      const mediaPaths = [];
+      for (const imgKey of imageKeys) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const localPath = path.join(MEDIA_DIR, `feishu-group-${timestamp}-${imgKey.slice(-8)}.png`);
+        const result = await downloadImage(messageId, imgKey, localPath);
+        if (result.success) {
+          mediaPaths.push(localPath);
+        }
+      }
+      if (mediaPaths.length > 0) {
+        const mediaLabel = mediaPaths.length === 1 ? '[image]' : `[${mediaPaths.length} images]`;
+        const msg = formatMessage('group', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, contextMessages, mediaPaths[0], { quotedContent });
+        sendToC4('feishu', endpoint, msg, groupRejectReply);
       }
       return;
     }
@@ -538,14 +641,14 @@ async function handleMessage(data) {
       const localPath = path.join(MEDIA_DIR, `feishu-group-${timestamp}-${fileName}`);
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
-        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath);
-        sendToC4('feishu', chatId, msg, groupRejectReply);
+        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, { quotedContent });
+        sendToC4('feishu', endpoint, msg, groupRejectReply);
       }
       return;
     }
 
-    const msg = formatMessage('group', senderName, cleanText || text, contextMessages);
-    sendToC4('feishu', chatId, msg, groupRejectReply);
+    const msg = formatMessage('group', senderName, cleanText || text, contextMessages, null, { quotedContent });
+    sendToC4('feishu', endpoint, msg, groupRejectReply);
   }
 }
 
@@ -584,26 +687,7 @@ function startWebSocket(creds) {
 function startWebhook(creds) {
   const PORT = config.webhook_port || 3458;
 
-  // Dedup: track recently processed message_ids (TTL 5 minutes)
-  const DEDUP_TTL = 5 * 60 * 1000;
-  const processedMessages = new Map();
-
-  function isDuplicate(messageId) {
-    if (!messageId) return false;
-    if (processedMessages.has(messageId)) {
-      console.log(`[feishu] Duplicate message_id ${messageId}, skipping`);
-      return true;
-    }
-    processedMessages.set(messageId, Date.now());
-    // Cleanup old entries
-    if (processedMessages.size > 100) {
-      const now = Date.now();
-      for (const [id, ts] of processedMessages) {
-        if (now - ts > DEDUP_TTL) processedMessages.delete(id);
-      }
-    }
-    return false;
-  }
+  // Dedup is now handled at handleMessage() level (shared by both modes)
 
   const app = express();
   app.use(express.json());
@@ -646,8 +730,7 @@ function startWebhook(creds) {
 
     // Handle message event asynchronously
     if (event.header?.event_type === 'im.message.receive_v1') {
-      const messageId = event.event?.message?.message_id;
-      if (isDuplicate(messageId)) return;
+      // Dedup is handled inside handleMessage() (unified for both modes)
 
       // Normalize data shape to match WSClient format for shared handleMessage
       const data = {

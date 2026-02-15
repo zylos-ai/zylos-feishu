@@ -17,7 +17,7 @@ import path from 'path';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig } from '../src/lib/config.js';
-import { sendToGroup, uploadImage, sendImage, uploadFile, sendFile } from '../src/lib/message.js';
+import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage } from '../src/lib/message.js';
 
 const MAX_LENGTH = 2000;  // Feishu message max length
 
@@ -30,8 +30,30 @@ if (args.length < 2) {
   process.exit(1);
 }
 
-const endpointId = args[0];
+const rawEndpoint = args[0];
 const message = args.slice(1).join(' ');
+
+/**
+ * Parse structured endpoint string.
+ * Format: chatId|root:rootId|msg:messageId
+ * Backward compatible: plain chatId without | works as before.
+ */
+function parseEndpoint(endpoint) {
+  const parts = endpoint.split('|');
+  const result = { chatId: parts[0] };
+  for (const part of parts.slice(1)) {
+    const colonIdx = part.indexOf(':');
+    if (colonIdx > 0) {
+      const key = part.substring(0, colonIdx);
+      const value = part.substring(colonIdx + 1);
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+const parsedEndpoint = parseEndpoint(rawEndpoint);
+const endpointId = parsedEndpoint.chatId;
 
 // Check if component is enabled
 const config = getConfig();
@@ -81,13 +103,25 @@ function splitMessage(text, maxLength) {
 }
 
 /**
- * Send text message with auto-chunking
+ * Send text message with auto-chunking.
+ * Uses reply API when rootId or msgId is available from structured endpoint.
  */
 async function sendText(endpoint, text) {
   const chunks = splitMessage(text, MAX_LENGTH);
+  const { root: rootId, msg: msgId } = parsedEndpoint;
 
   for (let i = 0; i < chunks.length; i++) {
-    const result = await sendToGroup(endpoint, chunks[i]);
+    let result;
+
+    if (i === 0 && (rootId || msgId)) {
+      // First chunk: reply to the thread root (for topic routing) or trigger message
+      const replyToId = rootId || msgId;
+      result = await replyToMessage(replyToId, chunks[i]);
+    } else {
+      // Subsequent chunks or no reply context: send directly to chat
+      result = await sendToGroup(endpoint, chunks[i]);
+    }
+
     if (!result.success) {
       throw new Error(result.message);
     }

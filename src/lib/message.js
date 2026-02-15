@@ -69,6 +69,47 @@ export async function sendMessage(receiveId, content, receiveIdType = 'chat_id',
 }
 
 /**
+ * Reply to a specific message (used for thread/topic routing and reply threading).
+ * Uses the im.message.reply API to create a reply in the same thread.
+ */
+export async function replyToMessage(messageId, content, msgType = 'text') {
+  const client = getClient();
+
+  let messageContent;
+  if (msgType === 'text') {
+    messageContent = JSON.stringify({ text: content });
+  } else {
+    messageContent = typeof content === 'string' ? content : JSON.stringify(content);
+  }
+
+  try {
+    const res = await client.im.message.reply({
+      path: { message_id: messageId },
+      data: {
+        msg_type: msgType,
+        content: messageContent,
+      },
+    });
+
+    if (res.code === 0) {
+      return {
+        success: true,
+        messageId: res.data.message_id,
+        message: 'Reply sent successfully',
+      };
+    } else {
+      return {
+        success: false,
+        message: `Failed to reply: ${res.msg}`,
+        code: res.code,
+      };
+    }
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+}
+
+/**
  * Send message to a group chat
  */
 export async function sendToGroup(chatId, content, msgType = 'text') {
