@@ -57,6 +57,16 @@ export async function sendMessage(receiveId, content, receiveIdType = 'chat_id',
         message: 'Message sent successfully',
       };
     } else {
+      // Check for permission error
+      const permErr = extractPermissionError({ response: { data: res } });
+      if (permErr) {
+        return {
+          success: false,
+          message: `Permission error: ${res.msg}`,
+          code: res.code,
+          permissionError: permErr,
+        };
+      }
       return {
         success: false,
         message: `Failed to send: ${res.msg}`,

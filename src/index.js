@@ -19,7 +19,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials } from './lib/config.js';
-import { downloadImage, downloadFile, sendMessage } from './lib/message.js';
+import { downloadImage, downloadFile, sendMessage, extractPermissionError } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 
 // C4 receive interface path
@@ -105,6 +105,38 @@ function loadCursors() {
 
 function saveCursors(cursors) {
   fs.writeFileSync(CURSORS_PATH, JSON.stringify(cursors, null, 2));
+}
+
+// ============================================================
+// Permission error tracking (cooldown to avoid spam)
+// ============================================================
+const PERMISSION_ERROR_COOLDOWN = 5 * 60 * 1000; // 5 minutes
+let lastPermissionErrorNotified = 0;
+
+/**
+ * Handle a detected Feishu API permission error.
+ * Sends a notification to the owner via C4 (with cooldown).
+ */
+function handlePermissionError(permErr) {
+  const now = Date.now();
+  if (now - lastPermissionErrorNotified < PERMISSION_ERROR_COOLDOWN) return;
+  lastPermissionErrorNotified = now;
+
+  const grantUrl = permErr.grantUrl || '';
+  const msg = `[System] Feishu API permission error (code ${permErr.code}): ${permErr.message}`;
+  const detail = grantUrl
+    ? `${msg}\nGrant permissions at: ${grantUrl}`
+    : msg;
+
+  console.error(`[feishu] ${detail}`);
+
+  // Notify owner if bound
+  if (config.owner?.bound && config.owner?.open_id) {
+    const ownerEndpoint = config.owner.open_id;
+    sendToC4('feishu', ownerEndpoint,
+      `[Feishu SYSTEM] Permission error detected: ${permErr.message}${grantUrl ? '\nAdmin grant URL: ' + grantUrl : ''}`
+    );
+  }
 }
 
 // ============================================================
@@ -223,8 +255,18 @@ async function resolveUserName(userId) {
       _userCacheDirty = true;
       return result.user.name;
     }
+    // Check for permission error in the result
+    if (!result.success && result.code === 99991672) {
+      handlePermissionError({ code: result.code, message: result.message || '' });
+    }
   } catch (err) {
-    console.log(`[feishu] Failed to lookup user ${userId}: ${err.message}`);
+    // Check if this is a permission error
+    const permErr = extractPermissionError(err);
+    if (permErr) {
+      handlePermissionError(permErr);
+    } else {
+      console.log(`[feishu] Failed to lookup user ${userId}: ${err.message}`);
+    }
     // If we have an expired cached name, return it as fallback
     if (cached) return cached.name;
   }
