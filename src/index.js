@@ -107,21 +107,62 @@ function saveCursors(cursors) {
   fs.writeFileSync(CURSORS_PATH, JSON.stringify(cursors, null, 2));
 }
 
-// User name cache
-function loadUserCache() {
+// ============================================================
+// User name cache with TTL (in-memory primary, file for cold start)
+// ============================================================
+const SENDER_NAME_TTL = 10 * 60 * 1000; // 10 minutes
+
+// In-memory cache: Map<userId, { name: string, expireAt: number }>
+const userCacheMemory = new Map();
+
+/**
+ * Load file cache on cold start to seed the in-memory cache.
+ * File entries are loaded with a fresh TTL since they were recently valid.
+ */
+function loadUserCacheFromFile() {
   try {
     if (fs.existsSync(USER_CACHE_PATH)) {
-      return JSON.parse(fs.readFileSync(USER_CACHE_PATH, 'utf-8'));
+      const data = JSON.parse(fs.readFileSync(USER_CACHE_PATH, 'utf-8'));
+      const now = Date.now();
+      for (const [userId, name] of Object.entries(data)) {
+        if (typeof name === 'string') {
+          userCacheMemory.set(userId, { name, expireAt: now + SENDER_NAME_TTL });
+        }
+      }
+      console.log(`[feishu] Loaded ${userCacheMemory.size} names from file cache`);
     }
-  } catch {}
-  return {};
+  } catch (err) {
+    console.log(`[feishu] Failed to load user cache file: ${err.message}`);
+  }
 }
 
-function saveUserCache(cache) {
-  fs.writeFileSync(USER_CACHE_PATH, JSON.stringify(cache, null, 2));
+/**
+ * Persist in-memory cache to file (for cold start acceleration).
+ * Called periodically when new names are resolved.
+ */
+let _userCacheDirty = false;
+function persistUserCache() {
+  if (!_userCacheDirty) return;
+  _userCacheDirty = false;
+  const obj = {};
+  for (const [userId, entry] of userCacheMemory) {
+    obj[userId] = entry.name;
+  }
+  try {
+    fs.writeFileSync(USER_CACHE_PATH, JSON.stringify(obj, null, 2));
+  } catch (err) {
+    console.log(`[feishu] Failed to persist user cache: ${err.message}`);
+  }
 }
 
-let userCache = loadUserCache();
+// Persist cache every 5 minutes
+setInterval(persistUserCache, 5 * 60 * 1000);
+
+// Load file cache on startup
+loadUserCacheFromFile();
+
+// Keep backward-compatible reference
+let userCache = null; // unused, kept for compat
 let groupCursors = loadCursors();
 
 // ============================================================
@@ -165,20 +206,27 @@ function getInMemoryContext(chatId, currentMessageId) {
   return filtered.slice(-count);
 }
 
-// Resolve user_id to name
+// Resolve user_id to name (with TTL-based in-memory cache)
 async function resolveUserName(userId) {
   if (!userId) return 'unknown';
-  if (userCache[userId]) return userCache[userId];
+
+  const now = Date.now();
+  const cached = userCacheMemory.get(userId);
+  if (cached && cached.expireAt > now) {
+    return cached.name;
+  }
 
   try {
     const result = await getUserInfo(userId);
     if (result.success && result.user?.name) {
-      userCache[userId] = result.user.name;
-      saveUserCache(userCache);
+      userCacheMemory.set(userId, { name: result.user.name, expireAt: now + SENDER_NAME_TTL });
+      _userCacheDirty = true;
       return result.user.name;
     }
   } catch (err) {
     console.log(`[feishu] Failed to lookup user ${userId}: ${err.message}`);
+    // If we have an expired cached name, return it as fallback
+    if (cached) return cached.name;
   }
   return userId;
 }
