@@ -168,6 +168,15 @@ async function removeTypingIndicator(messageId) {
 const TYPING_DIR = path.join(DATA_DIR, 'typing');
 fs.mkdirSync(TYPING_DIR, { recursive: true });
 
+// Clean up stale typing markers from previous run
+try {
+  const staleFiles = fs.readdirSync(TYPING_DIR);
+  for (const f of staleFiles) {
+    try { fs.unlinkSync(path.join(TYPING_DIR, f)); } catch {}
+  }
+  if (staleFiles.length > 0) console.log(`[feishu] Cleaned ${staleFiles.length} stale typing markers`);
+} catch {}
+
 function checkTypingDoneMarkers() {
   try {
     const files = fs.readdirSync(TYPING_DIR);
@@ -566,13 +575,19 @@ function sendToC4(source, endpoint, content, onReject) {
 
 /**
  * Build structured endpoint string for C4.
- * Format: chatId|root:rootId|msg:messageId
+ * Format: chatId|type:group|root:rootId|parent:parentId|msg:messageId
  * C4 treats endpoint as opaque string; send.js parses it.
  */
-function buildEndpoint(chatId, { rootId, messageId } = {}) {
+function buildEndpoint(chatId, { chatType, rootId, parentId, messageId } = {}) {
   let endpoint = chatId;
+  if (chatType) {
+    endpoint += `|type:${chatType}`;
+  }
   if (rootId) {
     endpoint += `|root:${rootId}`;
+  }
+  if (parentId) {
+    endpoint += `|parent:${parentId}`;
   }
   if (messageId) {
     endpoint += `|msg:${messageId}`;
@@ -784,7 +799,7 @@ async function handleMessage(data) {
   logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, data._timestamp || null, mentions);
 
   // Build structured endpoint with routing metadata
-  const endpoint = buildEndpoint(chatId, { rootId, messageId });
+  const endpoint = buildEndpoint(chatId, { chatType, rootId, parentId, messageId });
 
   // Fetch quoted message content if replying to a specific message (best-effort)
   let quotedContent = null;

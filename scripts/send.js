@@ -18,7 +18,7 @@ import path from 'path';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig } from '../src/lib/config.js';
-import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyWithMarkdownCard } from '../src/lib/message.js';
+import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage } from '../src/lib/message.js';
 
 const MAX_LENGTH = 2000;  // Feishu message max length
 
@@ -65,15 +65,6 @@ if (!config.enabled) {
 
 // Parse media prefix
 const mediaMatch = message.match(/^\[MEDIA:(\w+)\](.+)$/);
-
-/** Detect if text contains markdown elements that benefit from card rendering */
-function shouldUseCard(text) {
-  // Code blocks (fenced with ```)
-  if (/```[\s\S]*?```/.test(text)) return true;
-  // Markdown tables (|...|  followed by |---|)
-  if (/\|.+\|[\r\n]+\|[-:| ]+\|/.test(text)) return true;
-  return false;
-}
 
 /**
  * Split long message into chunks (markdown-aware).
@@ -149,33 +140,46 @@ function splitMessage(text, maxLength) {
 
 /**
  * Send text message with auto-chunking.
- * Uses reply API when rootId or msgId is available from structured endpoint.
- * Auto-detects content with code blocks or tables and sends as interactive card.
+ * Routing logic:
+ *   - DM (type=p2p): always sendMessage (no reply/quote effect)
+ *   - Topic (root exists): ALL chunks reply to parent||root (stay in topic)
+ *   - Group @mention (no root): first chunk replies to msg, rest use sendToGroup
+ *   - Fallback: sendToGroup
+ * Reply failures fall back to sendToGroup.
  */
 async function sendText(endpoint, text) {
-  const useCard = shouldUseCard(text);
   const chunks = splitMessage(text, MAX_LENGTH);
-  const { root: rootId, msg: msgId } = parsedEndpoint;
+  const { chatId, root, parent, msg, type } = parsedEndpoint;
+  const isDM = type === 'p2p';
+  const isGroup = type === 'group';
 
   for (let i = 0; i < chunks.length; i++) {
     let result;
     const isFirstChunk = i === 0;
-    const replyToId = rootId || msgId;
 
-    if (useCard) {
-      // Send as interactive card (markdown element) for rich content
-      if (isFirstChunk && replyToId) {
-        result = await replyMarkdownCard(replyToId, chunks[i]);
-      } else {
-        result = await sendMarkdownCard(endpoint, chunks[i]);
-      }
-    } else {
-      // Send as plain text
-      if (isFirstChunk && replyToId) {
-        result = await replyToMessage(replyToId, chunks[i]);
-      } else {
+    if (isDM) {
+      // DM: always send directly, no reply/quote effect
+      result = await sendMessage(chatId, chunks[i], 'chat_id', 'text');
+    } else if (root) {
+      // Topic thread: ALL chunks stay in topic
+      const replyTarget = parent || root;
+      try {
+        result = await replyToMessage(replyTarget, chunks[i]);
+      } catch (err) {
+        console.log('[feishu] Reply failed, falling back to sendToGroup:', err.message);
         result = await sendToGroup(endpoint, chunks[i]);
       }
+    } else if (isFirstChunk && msg && isGroup) {
+      // Group @mention: first chunk replies to trigger message
+      try {
+        result = await replyToMessage(msg, chunks[i]);
+      } catch (err) {
+        console.log('[feishu] Reply failed, falling back to sendToGroup:', err.message);
+        result = await sendToGroup(endpoint, chunks[i]);
+      }
+    } else {
+      // Fallback: send to group/chat directly
+      result = await sendToGroup(endpoint, chunks[i]);
     }
 
     if (!result.success) {
