@@ -36,7 +36,7 @@ const message = args.slice(1).join(' ');
 
 /**
  * Parse structured endpoint string.
- * Format: chatId|root:rootId|msg:messageId
+ * Format: chatId|type:group|root:rootId|parent:parentId|msg:messageId
  * Backward compatible: plain chatId without | works as before.
  */
 function parseEndpoint(endpoint) {
