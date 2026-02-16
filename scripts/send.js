@@ -165,14 +165,24 @@ async function sendText(endpoint, text) {
     } else if (root) {
       // Topic thread: ALL chunks stay in topic
       const replyTarget = parent || root;
-      result = await replyToMessage(replyTarget, chunks[i]);
+      try {
+        result = await replyToMessage(replyTarget, chunks[i]);
+      } catch (err) {
+        console.log('[feishu] Reply threw, falling back to sendToGroup:', err.message);
+        result = { success: false };
+      }
       if (!result.success) {
         console.log('[feishu] Reply failed, falling back to sendToGroup:', result.message);
         result = await sendToGroup(endpoint, chunks[i]);
       }
     } else if (isFirstChunk && msg && isGroup) {
       // Group @mention: first chunk replies to trigger message
-      result = await replyToMessage(msg, chunks[i]);
+      try {
+        result = await replyToMessage(msg, chunks[i]);
+      } catch (err) {
+        console.log('[feishu] Reply threw, falling back to sendToGroup:', err.message);
+        result = { success: false };
+      }
       if (!result.success) {
         console.log('[feishu] Reply failed, falling back to sendToGroup:', result.message);
         result = await sendToGroup(endpoint, chunks[i]);
