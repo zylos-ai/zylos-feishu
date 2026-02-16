@@ -221,12 +221,11 @@ function handlePermissionError(permErr) {
 
   console.error(`[feishu] ${detail}`);
 
-  // Notify owner if bound
+  // Notify owner directly via Feishu DM (bypass C4 — this is a system alert)
   if (config.owner?.bound && config.owner?.open_id) {
-    const ownerEndpoint = config.owner.open_id;
-    sendToC4('feishu', ownerEndpoint,
-      `[Feishu SYSTEM] Permission error detected: ${permErr.message}${grantUrl ? '\nAdmin grant URL: ' + grantUrl : ''}`
-    );
+    const alertText = `[Feishu SYSTEM] Permission error detected: ${permErr.message}${grantUrl ? '\nAdmin grant URL: ' + grantUrl : ''}`;
+    sendMessage(config.owner.open_id, alertText, 'open_id', 'text')
+      .catch(e => console.error('[feishu] Failed to send permission alert to owner:', e.message));
   }
 }
 
@@ -320,7 +319,7 @@ function getInMemoryContext(chatId, currentMessageId) {
   const history = chatHistories.get(chatId);
   if (!history || history.length === 0) return [];
 
-  const limit = config.message?.context_messages || DEFAULT_HISTORY_LIMIT;
+  const limit = getGroupHistoryLimit(chatId);
   const MIN_CONTEXT = 5;
 
   // Filter out the current message and get recent entries

@@ -79,6 +79,7 @@ const commands = {
     if (config.groups[chatId]) {
       console.log(`Group ${chatId} already configured, updating mode to ${mode}`);
       config.groups[chatId].mode = mode;
+      config.groups[chatId].requireMention = mode === 'mention';
     } else {
       config.groups[chatId] = {
         name,

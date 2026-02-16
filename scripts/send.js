@@ -17,8 +17,10 @@ import fs from 'fs';
 import path from 'path';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
-import { getConfig } from '../src/lib/config.js';
+import { getConfig, DATA_DIR } from '../src/lib/config.js';
 import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage } from '../src/lib/message.js';
+
+const TYPING_DIR = path.join(DATA_DIR, 'typing');
 
 const MAX_LENGTH = 2000;  // Feishu message max length
 
@@ -163,18 +165,16 @@ async function sendText(endpoint, text) {
     } else if (root) {
       // Topic thread: ALL chunks stay in topic
       const replyTarget = parent || root;
-      try {
-        result = await replyToMessage(replyTarget, chunks[i]);
-      } catch (err) {
-        console.log('[feishu] Reply failed, falling back to sendToGroup:', err.message);
+      result = await replyToMessage(replyTarget, chunks[i]);
+      if (!result.success) {
+        console.log('[feishu] Reply failed, falling back to sendToGroup:', result.message);
         result = await sendToGroup(endpoint, chunks[i]);
       }
     } else if (isFirstChunk && msg && isGroup) {
       // Group @mention: first chunk replies to trigger message
-      try {
-        result = await replyToMessage(msg, chunks[i]);
-      } catch (err) {
-        console.log('[feishu] Reply failed, falling back to sendToGroup:', err.message);
+      result = await replyToMessage(msg, chunks[i]);
+      if (!result.success) {
+        console.log('[feishu] Reply failed, falling back to sendToGroup:', result.message);
         result = await sendToGroup(endpoint, chunks[i]);
       }
     } else {
