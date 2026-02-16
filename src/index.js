@@ -150,15 +150,21 @@ async function removeTypingIndicator(messageId) {
   const state = activeTypingIndicators.get(messageId);
   if (!state) return;
 
-  activeTypingIndicators.delete(messageId);
   clearTimeout(state.timer);
 
   try {
-    await removeReaction(messageId, state.reactionId);
+    const result = await removeReaction(messageId, state.reactionId);
+    if (!result.success) {
+      // Retry once after a short delay for transient failures
+      await new Promise(r => setTimeout(r, 1000));
+      await removeReaction(messageId, state.reactionId);
+    }
   } catch (err) {
-    // Non-critical; silently fail
     console.log(`[feishu] Failed to remove typing indicator: ${err.message}`);
   }
+
+  // Always clean up state to avoid memory leaks
+  activeTypingIndicators.delete(messageId);
 }
 
 /**
@@ -180,18 +186,26 @@ try {
 function checkTypingDoneMarkers() {
   try {
     const files = fs.readdirSync(TYPING_DIR);
+    const now = Date.now();
     for (const file of files) {
       if (!file.endsWith('.done')) continue;
       const messageId = file.replace('.done', '');
+      const filePath = path.join(TYPING_DIR, file);
+
       if (activeTypingIndicators.has(messageId)) {
         removeTypingIndicator(messageId);
         console.log(`[feishu] Typing indicator removed for ${messageId} (reply sent)`);
-        // Clean up marker file only after indicator was removed
+        try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+      } else {
+        // Clean up orphaned markers older than 60s (indicator timed out or never registered)
         try {
-          fs.unlinkSync(path.join(TYPING_DIR, file));
+          const content = fs.readFileSync(filePath, 'utf8');
+          const markerTime = parseInt(content, 10);
+          if (now - markerTime > 60000) {
+            fs.unlinkSync(filePath);
+          }
         } catch { /* ignore */ }
       }
-      // If indicator not yet registered, leave marker for next poll cycle
     }
   } catch { /* ignore */ }
 }
