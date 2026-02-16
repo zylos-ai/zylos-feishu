@@ -68,10 +68,11 @@ export function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_PATH)) {
       const content = fs.readFileSync(CONFIG_PATH, 'utf8');
-      config = { ...DEFAULT_CONFIG, ...JSON.parse(content) };
-      // Runtime backward-compat: derive groupPolicy from legacy group_whitelist if present
-      // (group_whitelist is not in DEFAULT_CONFIG, so its presence means it came from the file)
-      if (config.group_whitelist !== undefined) {
+      const parsed = JSON.parse(content);
+      config = { ...DEFAULT_CONFIG, ...parsed };
+      // Runtime backward-compat: derive groupPolicy from legacy group_whitelist,
+      // but only if the file doesn't already have an explicit groupPolicy
+      if (config.group_whitelist !== undefined && !('groupPolicy' in parsed)) {
         config.groupPolicy = config.group_whitelist?.enabled !== false ? 'allowlist' : 'open';
       }
     } else {
