@@ -933,6 +933,8 @@ async function handleMessage(data) {
         const mediaLabel = mediaPaths.length === 1 ? '[image]' : `[${mediaPaths.length} images]`;
         const msg = formatMessage('group', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, contextMessages, mediaPaths[0], { quotedContent });
         sendToC4('feishu', endpoint, msg, groupRejectReply);
+      } else {
+        removeTypingIndicator(messageId);
       }
       return;
     }
@@ -944,6 +946,8 @@ async function handleMessage(data) {
       if (result.success) {
         const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, { quotedContent });
         sendToC4('feishu', endpoint, msg, groupRejectReply);
+      } else {
+        removeTypingIndicator(messageId);
       }
       return;
     }

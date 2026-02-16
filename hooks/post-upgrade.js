@@ -143,9 +143,17 @@ if (fs.existsSync(configPath)) {
       migrations.push('Added groups map');
     }
     if (config.groupPolicy === undefined) {
-      config.groupPolicy = 'allowlist';
+      // Derive from group_whitelist if present before defaulting
+      if (config.group_whitelist !== undefined) {
+        config.groupPolicy = config.group_whitelist?.enabled !== false ? 'allowlist' : 'open';
+        migrations.push(`Derived groupPolicy=${config.groupPolicy} from group_whitelist`);
+        config._legacy_group_whitelist = config.group_whitelist;
+        delete config.group_whitelist;
+      } else {
+        config.groupPolicy = 'allowlist';
+        migrations.push('Added groupPolicy (default: allowlist)');
+      }
       migrated = true;
-      migrations.push('Added groupPolicy (default: allowlist)');
     }
 
     // Migration 7 (legacy): Ensure proxy settings

@@ -197,17 +197,26 @@ async function sendText(endpoint, text) {
 }
 
 /**
- * Send media (image or file)
+ * Send media (image or file).
+ * Thread-aware: in topic threads, reply to parent||root to stay in topic.
  */
-async function sendMedia(endpoint, type, filePath) {
+async function sendMedia(type, filePath) {
   const trimmedPath = filePath.trim();
+  const { chatId, root, parent, type: chatType } = parsedEndpoint;
+  const replyTarget = root ? (parent || root) : null;
 
   if (type === 'image') {
     const uploadResult = await uploadImage(trimmedPath);
     if (!uploadResult.success) {
       throw new Error(`Failed to upload image: ${uploadResult.message}`);
     }
-    const sendResult = await sendImage(endpoint, uploadResult.imageKey);
+    // Try replying in-thread for topic messages
+    if (replyTarget) {
+      const result = await replyToMessage(replyTarget, JSON.stringify({ image_key: uploadResult.imageKey }), 'image');
+      if (result.success) return;
+      console.log('[feishu] Image reply failed, falling back to sendImage:', result.message);
+    }
+    const sendResult = await sendImage(chatId, uploadResult.imageKey);
     if (!sendResult.success) {
       throw new Error(`Failed to send image: ${sendResult.message}`);
     }
@@ -216,7 +225,13 @@ async function sendMedia(endpoint, type, filePath) {
     if (!uploadResult.success) {
       throw new Error(`Failed to upload file: ${uploadResult.message}`);
     }
-    const sendResult = await sendFile(endpoint, uploadResult.fileKey);
+    // Try replying in-thread for topic messages
+    if (replyTarget) {
+      const result = await replyToMessage(replyTarget, JSON.stringify({ file_key: uploadResult.fileKey }), 'file');
+      if (result.success) return;
+      console.log('[feishu] File reply failed, falling back to sendFile:', result.message);
+    }
+    const sendResult = await sendFile(chatId, uploadResult.fileKey);
     if (!sendResult.success) {
       throw new Error(`Failed to send file: ${sendResult.message}`);
     }
@@ -243,7 +258,7 @@ async function send() {
   try {
     if (mediaMatch) {
       const [, mediaType, mediaPath] = mediaMatch;
-      await sendMedia(endpointId, mediaType, mediaPath);
+      await sendMedia(mediaType, mediaPath);
     } else {
       await sendText(endpointId, message);
     }
