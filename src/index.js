@@ -304,7 +304,7 @@ function recordHistoryEntry(chatId, entry) {
   }
   const history = chatHistories.get(chatId);
   history.push(entry);
-  const limit = config.message?.context_messages || DEFAULT_HISTORY_LIMIT;
+  const limit = getGroupHistoryLimit(chatId);
   // Cap at 2x limit to avoid unbounded growth; trim to limit when reading
   if (history.length > limit * 2) {
     chatHistories.set(chatId, history.slice(-limit));
@@ -905,8 +905,6 @@ async function handleMessage(data) {
     console.log(`[feishu] ${smart ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
     const contextMessages = getGroupContext(chatId, messageId);
     updateCursor(chatId, messageId);
-    // Clear in-memory history after consuming context (will be rebuilt from subsequent messages)
-    chatHistories.delete(chatId);
 
     // Add typing indicator before processing
     addTypingIndicator(messageId);

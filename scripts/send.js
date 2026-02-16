@@ -202,8 +202,8 @@ async function sendText(endpoint, text) {
  */
 async function sendMedia(type, filePath) {
   const trimmedPath = filePath.trim();
-  const { chatId, root, parent, type: chatType } = parsedEndpoint;
-  const replyTarget = root ? (parent || root) : null;
+  const { chatId, root, parent, msg, type: chatType } = parsedEndpoint;
+  const replyTarget = root ? (parent || root) : (msg && chatType === 'group' ? msg : null);
 
   if (type === 'image') {
     const uploadResult = await uploadImage(trimmedPath);
