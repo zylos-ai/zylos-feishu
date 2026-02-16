@@ -69,6 +69,11 @@ export function loadConfig() {
     if (fs.existsSync(CONFIG_PATH)) {
       const content = fs.readFileSync(CONFIG_PATH, 'utf8');
       config = { ...DEFAULT_CONFIG, ...JSON.parse(content) };
+      // Runtime backward-compat: derive groupPolicy from legacy group_whitelist if present
+      // (group_whitelist is not in DEFAULT_CONFIG, so its presence means it came from the file)
+      if (config.group_whitelist !== undefined) {
+        config.groupPolicy = config.group_whitelist?.enabled !== false ? 'allowlist' : 'open';
+      }
     } else {
       console.warn(`[feishu] Config file not found: ${CONFIG_PATH}`);
       config = { ...DEFAULT_CONFIG };

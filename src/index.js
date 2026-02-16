@@ -335,11 +335,10 @@ function getInMemoryContext(chatId, currentMessageId) {
   if (!history || history.length === 0) return [];
 
   const limit = getGroupHistoryLimit(chatId);
-  const MIN_CONTEXT = 5;
 
   // Filter out the current message and get recent entries
   const filtered = history.filter(m => m.message_id !== currentMessageId);
-  const count = Math.max(MIN_CONTEXT, Math.min(limit, filtered.length));
+  const count = Math.min(limit, filtered.length);
   return filtered.slice(-count);
 }
 
