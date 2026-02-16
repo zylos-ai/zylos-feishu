@@ -186,11 +186,12 @@ function checkTypingDoneMarkers() {
       if (activeTypingIndicators.has(messageId)) {
         removeTypingIndicator(messageId);
         console.log(`[feishu] Typing indicator removed for ${messageId} (reply sent)`);
+        // Clean up marker file only after indicator was removed
+        try {
+          fs.unlinkSync(path.join(TYPING_DIR, file));
+        } catch { /* ignore */ }
       }
-      // Clean up marker file
-      try {
-        fs.unlinkSync(path.join(TYPING_DIR, file));
-      } catch { /* ignore */ }
+      // If indicator not yet registered, leave marker for next poll cycle
     }
   } catch { /* ignore */ }
 }
@@ -797,11 +798,8 @@ async function handleMessage(data) {
   // Build structured endpoint with routing metadata
   const endpoint = buildEndpoint(chatId, { chatType, rootId, parentId, messageId });
 
-  // Fetch quoted message content if replying to a specific message (best-effort)
+  // quotedContent is fetched lazily after routing eligibility checks
   let quotedContent = null;
-  if (parentId) {
-    quotedContent = await fetchQuotedMessage(parentId);
-  }
 
   // Private chat handling
   if (chatType === 'p2p') {
@@ -816,6 +814,9 @@ async function handleMessage(data) {
 
     // Add typing indicator
     addTypingIndicator(messageId);
+
+    // Fetch quoted message after eligibility checks (avoid unnecessary API calls)
+    if (parentId) quotedContent = await fetchQuotedMessage(parentId);
 
     const senderName = await resolveUserName(senderUserId);
     const rejectReply = (errMsg) => {
@@ -908,6 +909,9 @@ async function handleMessage(data) {
 
     // Add typing indicator before processing
     addTypingIndicator(messageId);
+
+    // Fetch quoted message after eligibility checks (avoid unnecessary API calls)
+    if (parentId) quotedContent = await fetchQuotedMessage(parentId);
 
     const senderName = await resolveUserName(senderUserId);
     const cleanText = resolveMentions(text, mentions, { stripBot: true, botOpenId });

@@ -105,8 +105,8 @@ function splitMessage(text, maxLength) {
           const blockEnd = remaining.indexOf('\n', fenceEnd + 3);
           breakAt = blockEnd !== -1 ? blockEnd + 1 : fenceEnd + 3;
         }
-        // If block end is still beyond 2x maxLength, fall back to hard break
-        if (breakAt > maxLength * 2) {
+        // If block end exceeds maxLength, fall back to hard break
+        if (breakAt > maxLength) {
           breakAt = maxLength;
         }
       }
