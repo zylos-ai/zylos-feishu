@@ -447,9 +447,6 @@ function isGroupAllowed(chatId) {
   const legacySmart = (config.smart_groups || []).some(g => g.chat_id === chatId);
   if (legacyAllowed || legacySmart) return true;
 
-  // Legacy group_whitelist logic
-  if (config.group_whitelist?.enabled === false) return true;
-
   return false;
 }
 

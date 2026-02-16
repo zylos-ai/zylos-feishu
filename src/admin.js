@@ -396,11 +396,11 @@ function migrateGroupConfig(config) {
   }
 
   // Migrate group_whitelist → groupPolicy
+  // Always derive from group_whitelist when present (loadConfig merges defaults,
+  // so config.groupPolicy may already be set to 'allowlist' from defaults — not from user intent)
   if (config.group_whitelist !== undefined) {
-    if (!config.groupPolicy) {
-      config.groupPolicy = config.group_whitelist?.enabled !== false ? 'allowlist' : 'open';
-      migrations.push(`Migrated group_whitelist.enabled=${config.group_whitelist?.enabled} → groupPolicy=${config.groupPolicy}`);
-    }
+    config.groupPolicy = config.group_whitelist?.enabled !== false ? 'allowlist' : 'open';
+    migrations.push(`Migrated group_whitelist.enabled=${config.group_whitelist?.enabled} → groupPolicy=${config.groupPolicy}`);
     config._legacy_group_whitelist = config.group_whitelist;
     delete config.group_whitelist;
     migrated = true;
