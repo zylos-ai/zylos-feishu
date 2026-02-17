@@ -19,14 +19,17 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials } from './lib/config.js';
-import { downloadImage, downloadFile, sendMessage } from './lib/message.js';
+import { downloadImage, downloadFile, sendMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
+import { listChatMembers } from './lib/chat.js';
 
 // C4 receive interface path
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 
 // Bot identity (fetched at startup)
 let botOpenId = '';
+let botAppId = '';
+let botAppName = '';
 
 // WSClient instance for graceful shutdown (websocket mode only)
 let wsClient = null;
@@ -46,6 +49,37 @@ fs.mkdirSync(MEDIA_DIR, { recursive: true });
 // State files
 const CURSORS_PATH = path.join(DATA_DIR, 'group-cursors.json');
 const USER_CACHE_PATH = path.join(DATA_DIR, 'user-cache.json');
+
+// ============================================================
+// Message deduplication (shared by websocket and webhook modes)
+// ============================================================
+const DEDUP_TTL = 5 * 60 * 1000; // 5 minutes
+const processedMessages = new Map();
+
+function isDuplicate(messageId) {
+  if (!messageId) return false;
+  if (processedMessages.has(messageId)) {
+    console.log(`[feishu] Duplicate message_id ${messageId}, skipping`);
+    return true;
+  }
+  processedMessages.set(messageId, Date.now());
+  // Cleanup old entries
+  if (processedMessages.size > 200) {
+    const now = Date.now();
+    for (const [id, ts] of processedMessages) {
+      if (now - ts > DEDUP_TTL) processedMessages.delete(id);
+    }
+  }
+  return false;
+}
+
+// Periodic cleanup of expired dedup entries (avoids accumulation in low-traffic chats)
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, ts] of processedMessages) {
+    if (now - ts > DEDUP_TTL) processedMessages.delete(id);
+  }
+}, DEDUP_TTL);
 
 console.log(`[feishu] Config loaded, enabled: ${config.enabled}`);
 
@@ -84,37 +118,399 @@ function saveCursors(cursors) {
   fs.writeFileSync(CURSORS_PATH, JSON.stringify(cursors, null, 2));
 }
 
-// User name cache
-function loadUserCache() {
+// ============================================================
+// Typing indicator (emoji reaction on message while processing)
+// ============================================================
+const TYPING_EMOJI = 'Typing';  // ⌨️ keyboard typing indicator
+const TYPING_TIMEOUT = 120 * 1000; // 120 seconds max
+
+// Track active typing indicators: Map<messageId, { reactionId, timer }>
+const activeTypingIndicators = new Map();
+
+/**
+ * Add a typing indicator (emoji reaction) to a message.
+ * Returns the state needed to remove it later.
+ */
+async function addTypingIndicator(messageId) {
+  try {
+    const result = await addReaction(messageId, TYPING_EMOJI);
+    if (result.success && result.reactionId) {
+      // Set auto-remove timeout
+      const timer = setTimeout(() => {
+        removeTypingIndicator(messageId);
+      }, TYPING_TIMEOUT);
+
+      activeTypingIndicators.set(messageId, {
+        reactionId: result.reactionId,
+        timer,
+      });
+
+      return true;
+    }
+  } catch (err) {
+    // Non-critical; silently fail
+    console.log(`[feishu] Failed to add typing indicator: ${err.message}`);
+  }
+  return false;
+}
+
+/**
+ * Remove a typing indicator from a message.
+ */
+async function removeTypingIndicator(messageId) {
+  const state = activeTypingIndicators.get(messageId);
+  if (!state) return;
+
+  clearTimeout(state.timer);
+  let removed = false;
+
+  try {
+    const result = await removeReaction(messageId, state.reactionId);
+    if (result.success) {
+      removed = true;
+    } else {
+      await new Promise(r => setTimeout(r, 1000));
+      const retry = await removeReaction(messageId, state.reactionId);
+      removed = retry.success;
+    }
+  } catch (err) {
+    console.log(`[feishu] Failed to remove typing indicator: ${err.message}`);
+  }
+
+  if (removed) {
+    activeTypingIndicators.delete(messageId);
+  } else {
+    // Deferred retry to avoid orphaned emoji reaction
+    state.timer = setTimeout(() => {
+      removeReaction(messageId, state.reactionId)
+        .catch(() => {})
+        .finally(() => activeTypingIndicators.delete(messageId));
+    }, 10000);
+  }
+}
+
+/**
+ * Check for typing-done marker files written by send.js.
+ * When found, remove the typing indicator and clean up the marker.
+ */
+const TYPING_DIR = path.join(DATA_DIR, 'typing');
+fs.mkdirSync(TYPING_DIR, { recursive: true });
+
+// Clean up stale typing markers from previous run
+try {
+  const staleFiles = fs.readdirSync(TYPING_DIR);
+  for (const f of staleFiles) {
+    try { fs.unlinkSync(path.join(TYPING_DIR, f)); } catch {}
+  }
+  if (staleFiles.length > 0) console.log(`[feishu] Cleaned ${staleFiles.length} stale typing markers`);
+} catch {}
+
+function checkTypingDoneMarkers() {
+  try {
+    const files = fs.readdirSync(TYPING_DIR);
+    const now = Date.now();
+    for (const file of files) {
+      if (!file.endsWith('.done')) continue;
+      const messageId = file.replace('.done', '');
+      const filePath = path.join(TYPING_DIR, file);
+
+      if (activeTypingIndicators.has(messageId)) {
+        removeTypingIndicator(messageId);
+        console.log(`[feishu] Typing indicator removed for ${messageId} (reply sent)`);
+        try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+      } else {
+        // Clean up orphaned markers older than 60s (indicator timed out or never registered)
+        try {
+          const content = fs.readFileSync(filePath, 'utf8');
+          const markerTime = parseInt(content, 10);
+          if (now - markerTime > 60000) {
+            fs.unlinkSync(filePath);
+          }
+        } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+// Poll for typing-done markers every 2 seconds
+setInterval(checkTypingDoneMarkers, 2000);
+
+// ============================================================
+// Permission error tracking (cooldown to avoid spam)
+// ============================================================
+const PERMISSION_ERROR_COOLDOWN = 5 * 60 * 1000; // 5 minutes
+let lastPermissionErrorNotified = 0;
+
+/**
+ * Handle a detected Feishu API permission error.
+ * Sends a notification to the owner via C4 (with cooldown).
+ */
+function handlePermissionError(permErr) {
+  const now = Date.now();
+  if (now - lastPermissionErrorNotified < PERMISSION_ERROR_COOLDOWN) return;
+  lastPermissionErrorNotified = now;
+
+  const grantUrl = permErr.grantUrl || '';
+  const msg = `[System] Feishu API permission error (code ${permErr.code}): ${permErr.message}`;
+  const detail = grantUrl
+    ? `${msg}\nGrant permissions at: ${grantUrl}`
+    : msg;
+
+  console.error(`[feishu] ${detail}`);
+
+  // Notify owner directly via Feishu DM (bypass C4 — this is a system alert)
+  if (config.owner?.bound && config.owner?.open_id) {
+    const alertText = `[Feishu SYSTEM] Permission error detected: ${permErr.message}${grantUrl ? '\nAdmin grant URL: ' + grantUrl : ''}`;
+    sendMessage(config.owner.open_id, alertText, 'open_id', 'text')
+      .catch(e => console.error('[feishu] Failed to send permission alert to owner:', e.message));
+  }
+}
+
+// ============================================================
+// User name cache with TTL (in-memory primary, file for cold start)
+// ============================================================
+const SENDER_NAME_TTL = 10 * 60 * 1000; // 10 minutes
+
+// In-memory cache: Map<userId, { name: string, expireAt: number }>
+const userCacheMemory = new Map();
+
+/**
+ * Load file cache on cold start to seed the in-memory cache.
+ * File entries are loaded with a fresh TTL since they were recently valid.
+ */
+function loadUserCacheFromFile() {
   try {
     if (fs.existsSync(USER_CACHE_PATH)) {
-      return JSON.parse(fs.readFileSync(USER_CACHE_PATH, 'utf-8'));
+      const data = JSON.parse(fs.readFileSync(USER_CACHE_PATH, 'utf-8'));
+      const now = Date.now();
+      for (const [userId, name] of Object.entries(data)) {
+        if (typeof name === 'string') {
+          userCacheMemory.set(userId, { name, expireAt: now + SENDER_NAME_TTL });
+        }
+      }
+      console.log(`[feishu] Loaded ${userCacheMemory.size} names from file cache`);
     }
-  } catch {}
-  return {};
+  } catch (err) {
+    console.log(`[feishu] Failed to load user cache file: ${err.message}`);
+  }
 }
 
-function saveUserCache(cache) {
-  fs.writeFileSync(USER_CACHE_PATH, JSON.stringify(cache, null, 2));
+/**
+ * Persist in-memory cache to file (for cold start acceleration).
+ * Called periodically when new names are resolved.
+ */
+let _userCacheDirty = false;
+function persistUserCache() {
+  if (!_userCacheDirty) return;
+  _userCacheDirty = false;
+  const obj = {};
+  for (const [userId, entry] of userCacheMemory) {
+    obj[userId] = entry.name;
+  }
+  try {
+    fs.writeFileSync(USER_CACHE_PATH, JSON.stringify(obj, null, 2));
+  } catch (err) {
+    console.log(`[feishu] Failed to persist user cache: ${err.message}`);
+  }
 }
 
-let userCache = loadUserCache();
+// Persist cache every 5 minutes
+setInterval(persistUserCache, 5 * 60 * 1000);
+
+// Load file cache on startup
+loadUserCacheFromFile();
+
+// Keep backward-compatible reference
+let userCache = null; // unused, kept for compat
 let groupCursors = loadCursors();
 
-// Resolve user_id to name
+// ============================================================
+// In-memory chat history (replaces file-based context building)
+// File logs are kept for audit; this Map is used for fast context.
+// ============================================================
+const DEFAULT_HISTORY_LIMIT = 5;
+const chatHistories = new Map(); // Map<chatId, Array<{ message_id, user_name, user_id, text, timestamp }>>
+
+/**
+ * Record a message entry into in-memory chat history.
+ * Caps entries at the configured limit per chat.
+ */
+function recordHistoryEntry(chatId, entry) {
+  if (!chatHistories.has(chatId)) {
+    chatHistories.set(chatId, []);
+  }
+  const history = chatHistories.get(chatId);
+  // Deduplicate by message_id (lazy load + real-time can overlap)
+  if (entry.message_id && history.some(m => m.message_id === entry.message_id)) {
+    return;
+  }
+  history.push(entry);
+  const limit = getGroupHistoryLimit(chatId);
+  // Cap at 2x limit to avoid unbounded growth; trim to limit when reading
+  if (history.length > limit * 2) {
+    chatHistories.set(chatId, history.slice(-limit));
+  }
+}
+
+/**
+ * Get recent context messages from in-memory history.
+ * Excludes the current message itself.
+ */
+function getInMemoryContext(chatId, currentMessageId) {
+  const history = chatHistories.get(chatId);
+  if (!history || history.length === 0) return [];
+
+  const limit = getGroupHistoryLimit(chatId);
+
+  // Filter out the current message and get recent entries
+  const filtered = history.filter(m => m.message_id !== currentMessageId);
+  const count = Math.min(limit, filtered.length);
+  return filtered.slice(-count);
+}
+
+/**
+ * Pin the root message to the first position in thread context.
+ * If root was trimmed by the context limit, fetch it from the full history.
+ */
+function pinRootMessage(context, rootId, threadId) {
+  if (!rootId || !context) return context;
+  const result = [...context];
+  const rootIdx = result.findIndex(m => m.message_id === rootId);
+  if (rootIdx > 0) {
+    // Root exists but not first — move it
+    const [root] = result.splice(rootIdx, 1);
+    result.unshift(root);
+  } else if (rootIdx === -1) {
+    // Root was trimmed by limit — try to recover from full history
+    const fullHistory = chatHistories.get(threadId);
+    if (fullHistory) {
+      const rootEntry = fullHistory.find(m => m.message_id === rootId);
+      if (rootEntry) {
+        result.unshift(rootEntry);
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Get context with lazy load fallback.
+ * If in-memory history is empty (e.g. after restart), fetch from API once.
+ * @param {string} containerId - chat_id or thread_id
+ * @param {string} currentMessageId - current message to exclude
+ * @param {'chat'|'thread'} containerType - container type for API fallback
+ */
+const _lazyLoadedContainers = new Set();
+
+// Preload group member names into cache (avoids cross-tenant API errors)
+const _preloadedGroups = new Set();
+async function preloadGroupMembers(chatId) {
+  if (_preloadedGroups.has(chatId)) return;
+  _preloadedGroups.add(chatId);
+  try {
+    const result = await listChatMembers(chatId);
+    if (result.success && result.members) {
+      const now = Date.now();
+      let count = 0;
+      for (const member of result.members) {
+        if (member.memberId && member.name && !userCacheMemory.has(member.memberId)) {
+          userCacheMemory.set(member.memberId, { name: member.name, expireAt: now + SENDER_NAME_TTL });
+          _userCacheDirty = true;
+          count++;
+        }
+      }
+      console.log(`[feishu] Preloaded ${count} member names for group ${chatId}`);
+    }
+  } catch (err) {
+    console.log(`[feishu] Failed to preload group members for ${chatId}: ${err.message}`);
+  }
+}
+
+async function getContextWithFallback(containerId, currentMessageId, containerType = 'chat') {
+  if (_lazyLoadedContainers.has(containerId)) {
+    return getInMemoryContext(containerId, currentMessageId);
+  }
+
+  // First access after restart — try to fetch from API
+  try {
+    const limit = containerType === 'thread'
+      ? (config.message?.context_messages || DEFAULT_HISTORY_LIMIT)
+      : getGroupHistoryLimit(containerId);
+    const result = await listMessages(containerId, limit, 'desc', null, null, containerType);
+    if (result.success) {
+      _lazyLoadedContainers.add(containerId);
+      if (result.messages.length > 0) {
+        // Sort by createTime to ensure chronological order
+        // (reverse of desc is usually correct, but thread root may be returned out of order)
+        const msgs = result.messages.sort((a, b) => new Date(a.createTime) - new Date(b.createTime));
+        for (const msg of msgs) {
+          const userName = await resolveUserName(msg.sender);
+          // Parse post messages (raw JSON) into readable text
+          let text = msg.content;
+          if (msg.type === 'post' && typeof text === 'string') {
+            try {
+              const parsed = JSON.parse(text);
+              const content = parsed.content || [];
+              ({ text } = extractPostText(content, msg.id));
+            } catch { /* use raw content */ }
+          }
+          // Resolve @_user_N mentions in lazy-loaded messages
+          if (msg.mentions && msg.mentions.length > 0) {
+            text = resolveMentions(text, msg.mentions);
+          }
+          recordHistoryEntry(containerId, {
+            timestamp: msg.createTime,
+            message_id: msg.id,
+            user_id: msg.sender,
+            user_name: userName,
+            text
+          });
+        }
+        console.log(`[feishu] Lazy-loaded ${msgs.length} messages for ${containerType} ${containerId}`);
+      }
+      return getInMemoryContext(containerId, currentMessageId);
+    }
+  } catch (err) {
+    console.log(`[feishu] Lazy-load failed for ${containerType} ${containerId}: ${err.message}`);
+  }
+  return getInMemoryContext(containerId, currentMessageId);
+}
+
+// Resolve user_id to name (with TTL-based in-memory cache)
 async function resolveUserName(userId) {
   if (!userId) return 'unknown';
-  if (userCache[userId]) return userCache[userId];
+
+  // Recognize bot's own messages (exact open_id or app_id match)
+  if (botOpenId && userId === botOpenId) return botAppName || 'bot';
+  if (botAppId && userId === botAppId) return botAppName || 'bot';
+
+  const now = Date.now();
+  const cached = userCacheMemory.get(userId);
+  if (cached && cached.expireAt > now) {
+    return cached.name;
+  }
 
   try {
     const result = await getUserInfo(userId);
     if (result.success && result.user?.name) {
-      userCache[userId] = result.user.name;
-      saveUserCache(userCache);
+      userCacheMemory.set(userId, { name: result.user.name, expireAt: now + SENDER_NAME_TTL });
+      _userCacheDirty = true;
       return result.user.name;
     }
+    // Check for permission error in the result
+    if (!result.success && result.code === 99991672) {
+      handlePermissionError({ code: result.code, message: result.message || '' });
+    }
   } catch (err) {
-    console.log(`[feishu] Failed to lookup user ${userId}: ${err.message}`);
+    // Check if this is a permission error
+    const permErr = extractPermissionError(err);
+    if (permErr) {
+      handlePermissionError(permErr);
+    } else {
+      console.log(`[feishu] Failed to lookup user ${userId}: ${err.message}`);
+    }
+    // If we have an expired cached name, return it as fallback
+    if (cached) return cached.name;
   }
   return userId;
 }
@@ -133,7 +529,8 @@ function decrypt(encrypt, encryptKey) {
 }
 
 // Log message (mentions resolved to real names for readable context)
-async function logMessage(chatType, chatId, userId, openId, text, messageId, timestamp, mentions) {
+// Also records to in-memory chat history for fast context building.
+async function logMessage(chatType, chatId, userId, openId, text, messageId, timestamp, mentions, threadId = null) {
   const userName = await resolveUserName(userId);
   const resolvedText = resolveMentions(text, mentions);
   const logEntry = {
@@ -146,46 +543,102 @@ async function logMessage(chatType, chatId, userId, openId, text, messageId, tim
   };
   const logLine = JSON.stringify(logEntry) + '\n';
 
+  // File log for audit
   const logId = chatType === 'p2p' ? userId : chatId;
   const logFile = path.join(LOGS_DIR, `${logId}.log`);
   fs.appendFileSync(logFile, logLine);
+
+  // In-memory history for context (group chats and threads)
+  // Thread messages go to thread history only (context isolation)
+  if (threadId) {
+    recordHistoryEntry(threadId, logEntry);
+  } else if (chatType === 'group') {
+    recordHistoryEntry(chatId, logEntry);
+  }
+
   console.log(`[feishu] Logged: [${userName}] ${(resolvedText || '').substring(0, 30)}...`);
 }
 
-// Get group context messages
-function getGroupContext(chatId, currentMessageId) {
-  const logFile = path.join(LOGS_DIR, `${chatId}.log`);
-  if (!fs.existsSync(logFile)) return [];
-
-  const MIN_CONTEXT = 5;
-  const MAX_CONTEXT = config.message?.context_messages || 10;
-  const cursor = groupCursors[chatId] || null;
-  const lines = fs.readFileSync(logFile, 'utf-8').trim().split('\n').filter(l => l);
-
-  const messages = lines.map(line => {
-    try { return JSON.parse(line); } catch { return null; }
-  }).filter(m => m);
-
-  let cursorIndex = -1;
-  let currentIndex = messages.length - 1;
-
-  if (cursor) {
-    cursorIndex = messages.findIndex(m => m.message_id === cursor);
-  }
-
-  let contextMessages = messages.slice(cursorIndex + 1, currentIndex);
-
-  if (contextMessages.length < MIN_CONTEXT && currentIndex > 0) {
-    const startIndex = Math.max(0, currentIndex - MIN_CONTEXT);
-    contextMessages = messages.slice(startIndex, currentIndex);
-  }
-
-  return contextMessages.slice(-MAX_CONTEXT);
+// Get group context messages (with API fallback after restart)
+async function getGroupContext(chatId, currentMessageId) {
+  return getContextWithFallback(chatId, currentMessageId, 'chat');
 }
 
 function updateCursor(chatId, messageId) {
   groupCursors[chatId] = messageId;
   saveCursors(groupCursors);
+}
+
+// ============================================================
+// Group policy helpers (references OpenClaw policy.ts patterns)
+// ============================================================
+
+/**
+ * Resolve per-group config from the groups map.
+ * @param {string} chatId
+ * @returns {object|undefined} Group config or undefined
+ */
+function resolveGroupConfig(chatId) {
+  const groups = config.groups || {};
+  return groups[chatId];
+}
+
+/**
+ * Check if a group is allowed based on groupPolicy and config.
+ * Also handles backward compat with legacy allowed_groups/smart_groups.
+ */
+function isGroupAllowed(chatId) {
+  const groupPolicy = config.groupPolicy || 'allowlist';
+
+  if (groupPolicy === 'disabled') return false;
+  if (groupPolicy === 'open') return true;
+
+  // allowlist mode: check groups map
+  const groupConfig = resolveGroupConfig(chatId);
+  if (groupConfig) return true;
+
+  // Backward compat: check legacy arrays if groups map doesn't have this chat
+  const legacyAllowed = (config.allowed_groups || []).some(g => g.chat_id === chatId);
+  const legacySmart = (config.smart_groups || []).some(g => g.chat_id === chatId);
+  if (legacyAllowed || legacySmart) return true;
+
+  return false;
+}
+
+/**
+ * Check if a group is in "smart" mode (receives all messages without @mention).
+ */
+function isSmartGroup(chatId) {
+  const groupConfig = resolveGroupConfig(chatId);
+  if (groupConfig) {
+    return groupConfig.mode === 'smart' || groupConfig.requireMention === false;
+  }
+  // Legacy fallback
+  return (config.smart_groups || []).some(g => g.chat_id === chatId);
+}
+
+/**
+ * Check if a sender is allowed in a specific group.
+ * If the group has an allowFrom list, check it; otherwise allow all.
+ */
+function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) {
+  const groupConfig = resolveGroupConfig(chatId);
+  if (!groupConfig?.allowFrom || groupConfig.allowFrom.length === 0) {
+    return true; // No per-group sender restriction
+  }
+  const allowed = groupConfig.allowFrom.map(s => String(s).toLowerCase());
+  if (allowed.includes('*')) return true;
+  if (senderUserId && allowed.includes(senderUserId.toLowerCase())) return true;
+  if (senderOpenId && allowed.includes(senderOpenId.toLowerCase())) return true;
+  return false;
+}
+
+/**
+ * Get the history limit for a specific group.
+ */
+function getGroupHistoryLimit(chatId) {
+  const groupConfig = resolveGroupConfig(chatId);
+  return groupConfig?.historyLimit || config.message?.context_messages || DEFAULT_HISTORY_LIMIT;
 }
 
 // Check if bot is mentioned
@@ -272,18 +725,100 @@ function sendToC4(source, endpoint, content, onReject) {
 }
 
 /**
+ * Build structured endpoint string for C4.
+ * Format: chatId|type:group|root:rootId|parent:parentId|msg:messageId
+ * C4 treats endpoint as opaque string; send.js parses it.
+ */
+function buildEndpoint(chatId, { chatType, rootId, parentId, messageId, threadId } = {}) {
+  let endpoint = chatId;
+  if (chatType) {
+    endpoint += `|type:${chatType}`;
+  }
+  if (rootId) {
+    endpoint += `|root:${rootId}`;
+  }
+  if (parentId) {
+    endpoint += `|parent:${parentId}`;
+  }
+  if (messageId) {
+    endpoint += `|msg:${messageId}`;
+  }
+  if (threadId) {
+    endpoint += `|thread:${threadId}`;
+  }
+  return endpoint;
+}
+
+/**
+ * Fetch content of a quoted/replied message (best-effort).
+ * Returns { sender, text } with resolved sender name.
+ */
+async function fetchQuotedMessage(messageId) {
+  try {
+    const { getClient } = await import('./lib/client.js');
+    const client = getClient();
+    const res = await client.im.message.get({
+      path: { message_id: messageId },
+    });
+    if (res.code === 0 && res.data?.items?.[0]) {
+      const msg = res.data.items[0];
+      const senderId = msg.sender?.id;
+      const senderName = await resolveUserName(senderId);
+      const content = JSON.parse(msg.body?.content || '{}');
+      let text;
+      if (msg.msg_type === 'text') {
+        text = content.text || '';
+      } else if (msg.msg_type === 'post') {
+        ({ text } = extractPostText(JSON.parse(msg.body?.content || '{}').content || [], messageId));
+      } else {
+        text = `[${msg.msg_type} message]`;
+      }
+      // Resolve @mentions in quoted message
+      if (msg.mentions && msg.mentions.length > 0) {
+        text = resolveMentions(text, msg.mentions);
+      }
+      return { sender: senderName, text };
+    }
+  } catch (err) {
+    console.log(`[feishu] Failed to fetch quoted message ${messageId}: ${err.message}`);
+  }
+  return null;
+}
+
+/**
  * Format message for C4
  */
-function formatMessage(chatType, userName, text, contextMessages = [], mediaPath = null) {
+function formatMessage(chatType, userName, text, contextMessages = [], mediaPath = null, { quotedContent, threadContext, threadRootId } = {}) {
   let prefix = chatType === 'p2p' ? '[Feishu DM]' : '[Feishu GROUP]';
+  let parts = [`${prefix} ${userName} said: `];
 
-  let contextPrefix = '';
-  if (contextMessages.length > 0) {
+  if (threadContext && threadContext.length > 0) {
+    const lines = [];
+    for (const m of threadContext) {
+      const line = `[${m.user_name || m.user_id}]: ${m.text}`;
+      if (threadRootId && m.message_id === threadRootId) {
+        lines.push(`<thread-root>\n${line}\n</thread-root>`);
+      } else {
+        lines.push(line);
+      }
+    }
+    parts.push(`<thread-context>\n${lines.join('\n')}\n</thread-context>\n\n`);
+  } else if (contextMessages.length > 0) {
     const contextLines = contextMessages.map(m => `[${m.user_name || m.user_id}]: ${m.text}`).join('\n');
-    contextPrefix = `[Group context - recent messages before this @mention:]\n${contextLines}\n\n[Current message:] `;
+    parts.push(`<group-context>\n${contextLines}\n</group-context>\n\n`);
   }
 
-  let message = `${prefix} ${userName} said: ${contextPrefix}${text}`;
+  // Include quoted message content if replying to a specific message
+  // Skip for thread messages (threadContext present) — context is already provided
+  if (quotedContent && !threadContext) {
+    const sender = quotedContent.sender || 'unknown';
+    const quoted = quotedContent.text || '';
+    parts.push(`<replying-to>\n[${sender}]: ${quoted}\n</replying-to>\n\n`);
+  }
+
+  parts.push(`<current-message>\n${text}\n</current-message>`);
+
+  let message = parts.join('');
 
   if (mediaPath) {
     message += ` ---- file: ${mediaPath}`;
@@ -349,27 +884,28 @@ function extractPostText(paragraphs, messageId) {
 }
 
 // Extract content from Feishu message
+// Returns imageKeys as array (all images from post messages, or single image)
 function extractMessageContent(message) {
   const msgType = message.message_type;
   const content = JSON.parse(message.content || '{}');
 
   switch (msgType) {
     case 'text':
-      return { text: content.text || '', imageKey: null, fileKey: null, fileName: null };
+      return { text: content.text || '', imageKeys: [], fileKey: null, fileName: null };
     case 'post': {
       if (content.content) {
         const { text, imageKeys } = extractPostText(content.content, message.message_id);
         const fullText = content.title ? `[${content.title}] ${text}` : text;
-        return { text: fullText, imageKey: imageKeys[0] || null, fileKey: null, fileName: null };
+        return { text: fullText, imageKeys, fileKey: null, fileName: null };
       }
-      return { text: '', imageKey: null, fileKey: null, fileName: null };
+      return { text: '', imageKeys: [], fileKey: null, fileName: null };
     }
     case 'image':
-      return { text: '', imageKey: content.image_key, fileKey: null, fileName: null };
+      return { text: '', imageKeys: content.image_key ? [content.image_key] : [], fileKey: null, fileName: null };
     case 'file':
-      return { text: '', imageKey: null, fileKey: content.file_key, fileName: content.file_name || 'unknown' };
+      return { text: '', imageKeys: [], fileKey: content.file_key, fileName: content.file_name || 'unknown' };
     default:
-      return { text: `[${msgType} message]`, imageKey: null, fileKey: null, fileName: null };
+      return { text: `[${msgType} message]`, imageKeys: [], fileKey: null, fileName: null };
   }
 }
 
@@ -418,14 +954,24 @@ async function handleMessage(data) {
   const chatId = message.chat_id;
   const messageId = message.message_id;
   const chatType = message.chat_type;
+  const rootId = message.root_id || null;
+  const parentId = message.parent_id || null;
+  const threadId = message.thread_id || null;
+  const upperMessageId = message.upper_message_id || null;
 
-  const { text, imageKey, fileKey, fileName } = extractMessageContent(message);
+  // DEBUG: log threading fields for analysis
+  console.log(`[feishu] DEBUG threading: msg=${messageId} root=${rootId} parent=${parentId} thread=${threadId} upper=${upperMessageId}`);
+
+  // Unified dedup check (both websocket and webhook modes)
+  if (isDuplicate(messageId)) return;
+
+  const { text, imageKeys, fileKey, fileName } = extractMessageContent(message);
   console.log(`[feishu] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
 
   // Build log text with file/image metadata
   let logText = text;
-  if (imageKey) {
-    const imageInfo = `[image, image_key: ${imageKey}, msg_id: ${messageId}]`;
+  for (const imgKey of imageKeys) {
+    const imageInfo = `[image, image_key: ${imgKey}, msg_id: ${messageId}]`;
     logText = logText ? `${logText}\n${imageInfo}` : imageInfo;
   }
   if (fileKey) {
@@ -433,7 +979,15 @@ async function handleMessage(data) {
     logText = logText ? `${logText}\n${fileInfo}` : fileInfo;
   }
 
-  logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, data._timestamp || null, mentions);
+  logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, data._timestamp || null, mentions, threadId);
+
+  // Build structured endpoint with routing metadata
+  const endpoint = buildEndpoint(chatId, { chatType, rootId, parentId, messageId, threadId });
+
+  // quotedContent is fetched lazily after routing eligibility checks
+  let quotedContent = null;
+  // Thread context for topic messages
+  let threadContext = null;
 
   // Private chat handling
   if (chatType === 'p2p') {
@@ -446,21 +1000,46 @@ async function handleMessage(data) {
       return;
     }
 
+    // Add typing indicator
+    addTypingIndicator(messageId);
+
+    // Fetch context: thread context for topic messages, quoted content for replies
+    if (threadId) {
+      threadContext = await getContextWithFallback(threadId, messageId, 'thread');
+      // Pin root message first in thread context
+      if (threadContext && rootId) {
+        threadContext = pinRootMessage(threadContext, rootId, threadId);
+      }
+    } else if (parentId) {
+      quotedContent = await fetchQuotedMessage(parentId);
+    }
+
     const senderName = await resolveUserName(senderUserId);
+    const cleanText = resolveMentions(text, mentions);
+    const threadRootId = threadId ? rootId : null;
     const rejectReply = (errMsg) => {
+      removeTypingIndicator(messageId);
       sendMessage(chatId, errMsg).catch(e => console.error('[feishu] reject reply failed:', e.message));
     };
 
-    if (imageKey) {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const localPath = path.join(MEDIA_DIR, `feishu-${timestamp}.png`);
-      const result = await downloadImage(messageId, imageKey, localPath);
-      if (result.success) {
-        const msg = formatMessage('p2p', senderName, `[image]${text ? ' ' + text : ''}`, [], localPath);
-        sendToC4('feishu', chatId, msg, rejectReply);
+    // Handle images (lazy download: only when message is being sent to C4)
+    if (imageKeys.length > 0) {
+      const mediaPaths = [];
+      for (const imgKey of imageKeys) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const localPath = path.join(MEDIA_DIR, `feishu-${timestamp}-${imgKey.slice(-8)}.png`);
+        const result = await downloadImage(messageId, imgKey, localPath);
+        if (result.success) {
+          mediaPaths.push(localPath);
+        }
+      }
+      if (mediaPaths.length > 0) {
+        const mediaLabel = mediaPaths.length === 1 ? '[image]' : `[${mediaPaths.length} images]`;
+        const msg = formatMessage('p2p', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, [], mediaPaths[0], { quotedContent, threadContext, threadRootId });
+        sendToC4('feishu', endpoint, msg, rejectReply);
       } else {
-        const msg = formatMessage('p2p', senderName, '[image download failed]');
-        sendToC4('feishu', chatId, msg, rejectReply);
+        const msg = formatMessage('p2p', senderName, '[image download failed]', [], null, { quotedContent, threadContext, threadRootId });
+        sendToC4('feishu', endpoint, msg, rejectReply);
       }
       return;
     }
@@ -470,65 +1049,102 @@ async function handleMessage(data) {
       const localPath = path.join(MEDIA_DIR, `feishu-${timestamp}-${fileName}`);
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
-        const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath);
-        sendToC4('feishu', chatId, msg, rejectReply);
+        const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath, { quotedContent, threadContext, threadRootId });
+        sendToC4('feishu', endpoint, msg, rejectReply);
       } else {
-        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`);
-        sendToC4('feishu', chatId, msg, rejectReply);
+        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`, [], null, { quotedContent, threadContext, threadRootId });
+        sendToC4('feishu', endpoint, msg, rejectReply);
       }
       return;
     }
 
-    const msg = formatMessage('p2p', senderName, text);
-    sendToC4('feishu', chatId, msg, rejectReply);
+    const msg = formatMessage('p2p', senderName, cleanText, [], null, { quotedContent, threadContext, threadRootId });
+    sendToC4('feishu', endpoint, msg, rejectReply);
     return;
   }
 
   // Group chat handling
   if (chatType === 'group') {
     const mentioned = isBotMentioned(mentions, botOpenId);
-    const isSmartGroup = (config.smart_groups || []).some(g => g.chat_id === chatId);
-    const allowedGroups = config.allowed_groups || [];
-    const whitelistEnabled = config.group_whitelist?.enabled !== false;
-    const isAllowedGroup = whitelistEnabled
-      ? allowedGroups.some(g => g.chat_id === chatId)
-      : true;
+    const smart = isSmartGroup(chatId);
 
-    if (!isSmartGroup && !mentioned) {
+    // Check group policy
+    if (!isGroupAllowed(chatId)) {
+      const senderIsOwner = isOwner(senderUserId, senderOpenId);
+      if (!senderIsOwner) {
+        console.log(`[feishu] Group ${chatId} not allowed by policy, ignoring`);
+        return;
+      }
+    }
+
+    // In non-smart groups, require @mention
+    if (!smart && !mentioned) {
       console.log(`[feishu] Group message without @mention, logged only`);
       return;
     }
 
-    if (!isSmartGroup) {
+    // Check per-group sender allowlist
+    if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId)) {
       const senderIsOwner = isOwner(senderUserId, senderOpenId);
-
-      if (!isAllowedGroup && !senderIsOwner) {
-        console.log(`[feishu] @mention in non-allowed group ${chatId}, ignoring`);
+      if (!senderIsOwner) {
+        console.log(`[feishu] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
         return;
       }
+    }
+
+    // For non-smart groups, also check global whitelist
+    if (!smart) {
+      const senderIsOwner = isOwner(senderUserId, senderOpenId);
       if (!senderIsOwner && !isWhitelisted(senderUserId, senderOpenId)) {
         console.log(`[feishu] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
         return;
       }
     }
 
-    console.log(`[feishu] ${isSmartGroup ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
-    const contextMessages = getGroupContext(chatId, messageId);
+    console.log(`[feishu] ${smart ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
+    await preloadGroupMembers(chatId);
+    const contextMessages = await getGroupContext(chatId, messageId);
     updateCursor(chatId, messageId);
 
+    // Add typing indicator before processing
+    addTypingIndicator(messageId);
+
+    // Fetch context: thread context for topic messages, quoted content for replies
+    if (threadId) {
+      threadContext = await getContextWithFallback(threadId, messageId, 'thread');
+      // Pin root message first in thread context
+      if (threadContext && rootId) {
+        threadContext = pinRootMessage(threadContext, rootId, threadId);
+      }
+    } else if (parentId) {
+      quotedContent = await fetchQuotedMessage(parentId);
+    }
+
     const senderName = await resolveUserName(senderUserId);
-    const cleanText = resolveMentions(text, mentions, { stripBot: true, botOpenId });
+    const cleanText = resolveMentions(text, mentions);
+    const threadRootId = threadId ? rootId : null;
     const groupRejectReply = (errMsg) => {
+      removeTypingIndicator(messageId);
       sendMessage(chatId, errMsg).catch(e => console.error('[feishu] reject reply failed:', e.message));
     };
 
-    if (imageKey) {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const localPath = path.join(MEDIA_DIR, `feishu-group-${timestamp}.png`);
-      const result = await downloadImage(messageId, imageKey, localPath);
-      if (result.success) {
-        const msg = formatMessage('group', senderName, `[image]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath);
-        sendToC4('feishu', chatId, msg, groupRejectReply);
+    // Handle images (lazy download: only for messages being sent to C4)
+    if (imageKeys.length > 0) {
+      const mediaPaths = [];
+      for (const imgKey of imageKeys) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const localPath = path.join(MEDIA_DIR, `feishu-group-${timestamp}-${imgKey.slice(-8)}.png`);
+        const result = await downloadImage(messageId, imgKey, localPath);
+        if (result.success) {
+          mediaPaths.push(localPath);
+        }
+      }
+      if (mediaPaths.length > 0) {
+        const mediaLabel = mediaPaths.length === 1 ? '[image]' : `[${mediaPaths.length} images]`;
+        const msg = formatMessage('group', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, contextMessages, mediaPaths[0], { quotedContent, threadContext, threadRootId });
+        sendToC4('feishu', endpoint, msg, groupRejectReply);
+      } else {
+        removeTypingIndicator(messageId);
       }
       return;
     }
@@ -538,14 +1154,16 @@ async function handleMessage(data) {
       const localPath = path.join(MEDIA_DIR, `feishu-group-${timestamp}-${fileName}`);
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
-        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath);
-        sendToC4('feishu', chatId, msg, groupRejectReply);
+        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, { quotedContent, threadContext, threadRootId });
+        sendToC4('feishu', endpoint, msg, groupRejectReply);
+      } else {
+        removeTypingIndicator(messageId);
       }
       return;
     }
 
-    const msg = formatMessage('group', senderName, cleanText || text, contextMessages);
-    sendToC4('feishu', chatId, msg, groupRejectReply);
+    const msg = formatMessage('group', senderName, cleanText || text, contextMessages, null, { quotedContent, threadContext, threadRootId });
+    sendToC4('feishu', endpoint, msg, groupRejectReply);
   }
 }
 
@@ -584,26 +1202,7 @@ function startWebSocket(creds) {
 function startWebhook(creds) {
   const PORT = config.webhook_port || 3458;
 
-  // Dedup: track recently processed message_ids (TTL 5 minutes)
-  const DEDUP_TTL = 5 * 60 * 1000;
-  const processedMessages = new Map();
-
-  function isDuplicate(messageId) {
-    if (!messageId) return false;
-    if (processedMessages.has(messageId)) {
-      console.log(`[feishu] Duplicate message_id ${messageId}, skipping`);
-      return true;
-    }
-    processedMessages.set(messageId, Date.now());
-    // Cleanup old entries
-    if (processedMessages.size > 100) {
-      const now = Date.now();
-      for (const [id, ts] of processedMessages) {
-        if (now - ts > DEDUP_TTL) processedMessages.delete(id);
-      }
-    }
-    return false;
-  }
+  // Dedup is now handled at handleMessage() level (shared by both modes)
 
   const app = express();
   app.use(express.json());
@@ -646,8 +1245,7 @@ function startWebhook(creds) {
 
     // Handle message event asynchronously
     if (event.header?.event_type === 'im.message.receive_v1') {
-      const messageId = event.event?.message?.message_id;
-      if (isDuplicate(messageId)) return;
+      // Dedup is handled inside handleMessage() (unified for both modes)
 
       // Normalize data shape to match WSClient format for shared handleMessage
       const data = {
@@ -669,6 +1267,31 @@ function startWebhook(creds) {
       mode: 'webhook',
       cursors: Object.keys(groupCursors).length
     });
+  });
+
+  // Internal endpoint: record bot's outgoing messages into in-memory history
+  app.post('/internal/record-outgoing', (req, res) => {
+    // Validate internal token (app_id) to prevent unauthorized injection
+    const token = req.headers['x-internal-token'];
+    if (!token || token !== botAppId) {
+      return res.status(403).json({ error: 'unauthorized' });
+    }
+    const { chatId, threadId, text, messageId } = req.body || {};
+    if (!text) return res.status(400).json({ error: 'missing text' });
+    const entry = {
+      timestamp: new Date().toISOString(),
+      message_id: messageId || `bot_${Date.now()}`,
+      user_id: botOpenId || 'bot',
+      user_name: botAppName || 'bot',
+      text
+    };
+    // Thread messages go to thread only (context isolation)
+    if (threadId) {
+      recordHistoryEntry(threadId, entry);
+    } else if (chatId) {
+      recordHistoryEntry(chatId, entry);
+    }
+    res.json({ ok: true });
   });
 
   app.listen(PORT, () => {
@@ -717,13 +1340,20 @@ if (!creds.app_id || !creds.app_secret) {
 
     if (res.code === 0 && res.bot) {
       botOpenId = res.bot.open_id;
-      console.log(`[feishu] Bot identity: ${res.bot.app_name} (${botOpenId})`);
+      botAppName = res.bot.app_name || 'bot';
+      console.log(`[feishu] Bot identity: ${botAppName} (${botOpenId})`);
     } else {
       console.error(`[feishu] Warning: Could not fetch bot info: ${res.msg}`);
     }
   } catch (err) {
     console.error(`[feishu] Warning: getBotInfo failed: ${err.message}`);
   }
+
+  // Store app_id for exact bot message matching
+  try {
+    const creds2 = getCredentials();
+    botAppId = creds2.app_id || '';
+  } catch {}
 
   // Start selected transport
   if (connectionMode === 'webhook') {

@@ -88,7 +88,7 @@ export async function searchChats(query) {
  * List chat members
  * @param {string} chatId - Chat ID
  */
-export async function listChatMembers(chatId) {
+export async function listChatMembers(chatId, memberIdType = 'open_id') {
   const client = getClient();
 
   try {
@@ -98,7 +98,7 @@ export async function listChatMembers(chatId) {
       },
       params: {
         page_size: 100,
-        member_id_type: 'open_id',
+        member_id_type: memberIdType,
       },
     });
 
