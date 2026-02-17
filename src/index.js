@@ -73,6 +73,14 @@ function isDuplicate(messageId) {
   return false;
 }
 
+// Periodic cleanup of expired dedup entries (avoids accumulation in low-traffic chats)
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, ts] of processedMessages) {
+    if (now - ts > DEDUP_TTL) processedMessages.delete(id);
+  }
+}, DEDUP_TTL);
+
 console.log(`[feishu] Config loaded, enabled: ${config.enabled}`);
 
 if (!config.enabled) {
@@ -154,20 +162,31 @@ async function removeTypingIndicator(messageId) {
   if (!state) return;
 
   clearTimeout(state.timer);
+  let removed = false;
 
   try {
     const result = await removeReaction(messageId, state.reactionId);
-    if (!result.success) {
-      // Retry once after a short delay for transient failures
+    if (result.success) {
+      removed = true;
+    } else {
       await new Promise(r => setTimeout(r, 1000));
-      await removeReaction(messageId, state.reactionId);
+      const retry = await removeReaction(messageId, state.reactionId);
+      removed = retry.success;
     }
   } catch (err) {
     console.log(`[feishu] Failed to remove typing indicator: ${err.message}`);
   }
 
-  // Always clean up state to avoid memory leaks
-  activeTypingIndicators.delete(messageId);
+  if (removed) {
+    activeTypingIndicators.delete(messageId);
+  } else {
+    // Deferred retry to avoid orphaned emoji reaction
+    state.timer = setTimeout(() => {
+      removeReaction(messageId, state.reactionId)
+        .catch(() => {})
+        .finally(() => activeTypingIndicators.delete(messageId));
+    }, 10000);
+  }
 }
 
 /**
@@ -418,8 +437,9 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
       ? (config.message?.context_messages || DEFAULT_HISTORY_LIMIT)
       : getGroupHistoryLimit(containerId);
     const result = await listMessages(containerId, limit, 'desc', null, null, containerType);
-    if (result.success && result.messages.length > 0) {
+    if (result.success) {
       _lazyLoadedContainers.add(containerId);
+      if (result.messages.length > 0) {
       // Sort by createTime to ensure chronological order
       // (reverse of desc is usually correct, but thread root may be returned out of order)
       const msgs = result.messages.sort((a, b) => new Date(a.createTime) - new Date(b.createTime));
@@ -447,6 +467,7 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
         });
       }
       console.log(`[feishu] Lazy-loaded ${msgs.length} messages for ${containerType} ${containerId}`);
+      }
       return getInMemoryContext(containerId, currentMessageId);
     }
   } catch (err) {
