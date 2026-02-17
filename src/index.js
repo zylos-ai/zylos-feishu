@@ -413,13 +413,13 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
   }
 
   // First access after restart — try to fetch from API
-  _lazyLoadedContainers.add(containerId);
   try {
     const limit = containerType === 'thread'
       ? (config.message?.context_messages || DEFAULT_HISTORY_LIMIT)
       : getGroupHistoryLimit(containerId);
     const result = await listMessages(containerId, limit, 'desc', null, null, containerType);
     if (result.success && result.messages.length > 0) {
+      _lazyLoadedContainers.add(containerId);
       // Sort by createTime to ensure chronological order
       // (reverse of desc is usually correct, but thread root may be returned out of order)
       const msgs = result.messages.sort((a, b) => new Date(a.createTime) - new Date(b.createTime));
@@ -1250,6 +1250,11 @@ function startWebhook(creds) {
 
   // Internal endpoint: record bot's outgoing messages into in-memory history
   app.post('/internal/record-outgoing', (req, res) => {
+    // Validate internal token (app_id) to prevent unauthorized injection
+    const token = req.headers['x-internal-token'];
+    if (!token || token !== botAppId) {
+      return res.status(403).json({ error: 'unauthorized' });
+    }
     const { chatId, threadId, text, messageId } = req.body || {};
     if (!text) return res.status(400).json({ error: 'missing text' });
     const entry = {
