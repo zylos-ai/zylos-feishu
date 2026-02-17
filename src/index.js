@@ -21,12 +21,14 @@ dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials } from './lib/config.js';
 import { downloadImage, downloadFile, sendMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
+import { listChatMembers } from './lib/chat.js';
 
 // C4 receive interface path
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 
 // Bot identity (fetched at startup)
 let botOpenId = '';
+let botAppId = '';
 let botAppName = '';
 
 // WSClient instance for graceful shutdown (websocket mode only)
@@ -381,10 +383,33 @@ function pinRootMessage(context, rootId, threadId) {
  */
 const _lazyLoadedContainers = new Set();
 
+// Preload group member names into cache (avoids cross-tenant API errors)
+const _preloadedGroups = new Set();
+async function preloadGroupMembers(chatId) {
+  if (_preloadedGroups.has(chatId)) return;
+  _preloadedGroups.add(chatId);
+  try {
+    const result = await listChatMembers(chatId);
+    if (result.success && result.members) {
+      const now = Date.now();
+      let count = 0;
+      for (const member of result.members) {
+        if (member.memberId && member.name && !userCacheMemory.has(member.memberId)) {
+          userCacheMemory.set(member.memberId, { name: member.name, expireAt: now + SENDER_NAME_TTL });
+          _userCacheDirty = true;
+          count++;
+        }
+      }
+      console.log(`[feishu] Preloaded ${count} member names for group ${chatId}`);
+    }
+  } catch (err) {
+    console.log(`[feishu] Failed to preload group members for ${chatId}: ${err.message}`);
+  }
+}
+
 async function getContextWithFallback(containerId, currentMessageId, containerType = 'chat') {
-  const context = getInMemoryContext(containerId, currentMessageId);
-  if (context.length > 0 || _lazyLoadedContainers.has(containerId)) {
-    return context;
+  if (_lazyLoadedContainers.has(containerId)) {
+    return getInMemoryContext(containerId, currentMessageId);
   }
 
   // First access after restart — try to fetch from API
@@ -427,16 +452,16 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
   } catch (err) {
     console.log(`[feishu] Lazy-load failed for ${containerType} ${containerId}: ${err.message}`);
   }
-  return context;
+  return getInMemoryContext(containerId, currentMessageId);
 }
 
 // Resolve user_id to name (with TTL-based in-memory cache)
 async function resolveUserName(userId) {
   if (!userId) return 'unknown';
 
-  // Recognize bot's own messages (open_id or app_id prefix)
+  // Recognize bot's own messages (exact open_id or app_id match)
   if (botOpenId && userId === botOpenId) return botAppName || 'bot';
-  if (userId.startsWith('cli_')) return botAppName || 'bot';
+  if (botAppId && userId === botAppId) return botAppName || 'bot';
 
   const now = Date.now();
   const cached = userCacheMemory.get(userId);
@@ -1056,6 +1081,7 @@ async function handleMessage(data) {
     }
 
     console.log(`[feishu] ${smart ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
+    await preloadGroupMembers(chatId);
     const contextMessages = await getGroupContext(chatId, messageId);
     updateCursor(chatId, messageId);
 
@@ -1296,6 +1322,12 @@ if (!creds.app_id || !creds.app_secret) {
   } catch (err) {
     console.error(`[feishu] Warning: getBotInfo failed: ${err.message}`);
   }
+
+  // Store app_id for exact bot message matching
+  try {
+    const creds2 = getCredentials();
+    botAppId = creds2.app_id || '';
+  } catch {}
 
   // Start selected transport
   if (connectionMode === 'webhook') {
