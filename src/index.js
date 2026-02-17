@@ -19,7 +19,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials } from './lib/config.js';
-import { downloadImage, downloadFile, sendMessage, extractPermissionError, addReaction, removeReaction } from './lib/message.js';
+import { downloadImage, downloadFile, sendMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 
 // C4 receive interface path
@@ -27,6 +27,7 @@ const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge
 
 // Bot identity (fetched at startup)
 let botOpenId = '';
+let botAppName = '';
 
 // WSClient instance for graceful shutdown (websocket mode only)
 let wsClient = null;
@@ -110,7 +111,7 @@ function saveCursors(cursors) {
 // ============================================================
 // Typing indicator (emoji reaction on message while processing)
 // ============================================================
-const TYPING_EMOJI = 'OnIt';  // ⏳-like indicator; Feishu emoji type
+const TYPING_EMOJI = 'Typing';  // ⌨️ keyboard typing indicator
 const TYPING_TIMEOUT = 120 * 1000; // 120 seconds max
 
 // Track active typing indicators: Map<messageId, { reactionId, timer }>
@@ -306,7 +307,7 @@ let groupCursors = loadCursors();
 // In-memory chat history (replaces file-based context building)
 // File logs are kept for audit; this Map is used for fast context.
 // ============================================================
-const DEFAULT_HISTORY_LIMIT = 20;
+const DEFAULT_HISTORY_LIMIT = 5;
 const chatHistories = new Map(); // Map<chatId, Array<{ message_id, user_name, user_id, text, timestamp }>>
 
 /**
@@ -318,6 +319,10 @@ function recordHistoryEntry(chatId, entry) {
     chatHistories.set(chatId, []);
   }
   const history = chatHistories.get(chatId);
+  // Deduplicate by message_id (lazy load + real-time can overlap)
+  if (entry.message_id && history.some(m => m.message_id === entry.message_id)) {
+    return;
+  }
   history.push(entry);
   const limit = getGroupHistoryLimit(chatId);
   // Cap at 2x limit to avoid unbounded growth; trim to limit when reading
@@ -342,9 +347,70 @@ function getInMemoryContext(chatId, currentMessageId) {
   return filtered.slice(-count);
 }
 
+/**
+ * Get context with lazy load fallback.
+ * If in-memory history is empty (e.g. after restart), fetch from API once.
+ * @param {string} containerId - chat_id or thread_id
+ * @param {string} currentMessageId - current message to exclude
+ * @param {'chat'|'thread'} containerType - container type for API fallback
+ */
+const _lazyLoadedContainers = new Set();
+
+async function getContextWithFallback(containerId, currentMessageId, containerType = 'chat') {
+  const context = getInMemoryContext(containerId, currentMessageId);
+  if (context.length > 0 || _lazyLoadedContainers.has(containerId)) {
+    return context;
+  }
+
+  // First access after restart — try to fetch from API
+  _lazyLoadedContainers.add(containerId);
+  try {
+    const limit = containerType === 'thread'
+      ? (config.message?.context_messages || DEFAULT_HISTORY_LIMIT)
+      : getGroupHistoryLimit(containerId);
+    const result = await listMessages(containerId, limit, 'desc', null, null, containerType);
+    if (result.success && result.messages.length > 0) {
+      // Populate in-memory history (oldest first)
+      const msgs = result.messages.reverse();
+      for (const msg of msgs) {
+        const userName = await resolveUserName(msg.sender);
+        // Parse post messages (raw JSON) into readable text
+        let text = msg.content;
+        if (msg.type === 'post' && typeof text === 'string') {
+          try {
+            const parsed = JSON.parse(text);
+            const content = parsed.content || [];
+            ({ text } = extractPostText(content, msg.id));
+          } catch { /* use raw content */ }
+        }
+        // Resolve @_user_N mentions in lazy-loaded messages
+        if (msg.mentions && msg.mentions.length > 0) {
+          text = resolveMentions(text, msg.mentions);
+        }
+        recordHistoryEntry(containerId, {
+          timestamp: msg.createTime,
+          message_id: msg.id,
+          user_id: msg.sender,
+          user_name: userName,
+          text
+        });
+      }
+      console.log(`[feishu] Lazy-loaded ${msgs.length} messages for ${containerType} ${containerId}`);
+      return getInMemoryContext(containerId, currentMessageId);
+    }
+  } catch (err) {
+    console.log(`[feishu] Lazy-load failed for ${containerType} ${containerId}: ${err.message}`);
+  }
+  return context;
+}
+
 // Resolve user_id to name (with TTL-based in-memory cache)
 async function resolveUserName(userId) {
   if (!userId) return 'unknown';
+
+  // Recognize bot's own messages (open_id or app_id prefix)
+  if (botOpenId && userId === botOpenId) return botAppName || 'bot';
+  if (userId.startsWith('cli_')) return botAppName || 'bot';
 
   const now = Date.now();
   const cached = userCacheMemory.get(userId);
@@ -392,7 +458,7 @@ function decrypt(encrypt, encryptKey) {
 
 // Log message (mentions resolved to real names for readable context)
 // Also records to in-memory chat history for fast context building.
-async function logMessage(chatType, chatId, userId, openId, text, messageId, timestamp, mentions) {
+async function logMessage(chatType, chatId, userId, openId, text, messageId, timestamp, mentions, threadId = null) {
   const userName = await resolveUserName(userId);
   const resolvedText = resolveMentions(text, mentions);
   const logEntry = {
@@ -410,17 +476,20 @@ async function logMessage(chatType, chatId, userId, openId, text, messageId, tim
   const logFile = path.join(LOGS_DIR, `${logId}.log`);
   fs.appendFileSync(logFile, logLine);
 
-  // In-memory history for context (group chats only)
-  if (chatType === 'group') {
+  // In-memory history for context (group chats and threads)
+  // Thread messages go to thread history only (context isolation)
+  if (threadId) {
+    recordHistoryEntry(threadId, logEntry);
+  } else if (chatType === 'group') {
     recordHistoryEntry(chatId, logEntry);
   }
 
   console.log(`[feishu] Logged: [${userName}] ${(resolvedText || '').substring(0, 30)}...`);
 }
 
-// Get group context messages (delegates to in-memory history)
-function getGroupContext(chatId, currentMessageId) {
-  return getInMemoryContext(chatId, currentMessageId);
+// Get group context messages (with API fallback after restart)
+async function getGroupContext(chatId, currentMessageId) {
+  return getContextWithFallback(chatId, currentMessageId, 'chat');
 }
 
 function updateCursor(chatId, messageId) {
@@ -588,7 +657,7 @@ function sendToC4(source, endpoint, content, onReject) {
  * Format: chatId|type:group|root:rootId|parent:parentId|msg:messageId
  * C4 treats endpoint as opaque string; send.js parses it.
  */
-function buildEndpoint(chatId, { chatType, rootId, parentId, messageId } = {}) {
+function buildEndpoint(chatId, { chatType, rootId, parentId, messageId, threadId } = {}) {
   let endpoint = chatId;
   if (chatType) {
     endpoint += `|type:${chatType}`;
@@ -602,12 +671,15 @@ function buildEndpoint(chatId, { chatType, rootId, parentId, messageId } = {}) {
   if (messageId) {
     endpoint += `|msg:${messageId}`;
   }
+  if (threadId) {
+    endpoint += `|thread:${threadId}`;
+  }
   return endpoint;
 }
 
 /**
  * Fetch content of a quoted/replied message (best-effort).
- * Used to provide context when user replies to a specific message.
+ * Returns { sender, text } with resolved sender name.
  */
 async function fetchQuotedMessage(messageId) {
   try {
@@ -618,13 +690,22 @@ async function fetchQuotedMessage(messageId) {
     });
     if (res.code === 0 && res.data?.items?.[0]) {
       const msg = res.data.items[0];
+      const senderId = msg.sender?.id;
+      const senderName = await resolveUserName(senderId);
       const content = JSON.parse(msg.body?.content || '{}');
-      if (msg.msg_type === 'text') return content.text || '';
-      if (msg.msg_type === 'post') {
-        const { text } = extractPostText(JSON.parse(msg.body?.content || '{}').content || [], messageId);
-        return text;
+      let text;
+      if (msg.msg_type === 'text') {
+        text = content.text || '';
+      } else if (msg.msg_type === 'post') {
+        ({ text } = extractPostText(JSON.parse(msg.body?.content || '{}').content || [], messageId));
+      } else {
+        text = `[${msg.msg_type} message]`;
       }
-      return `[${msg.msg_type} message]`;
+      // Resolve @mentions in quoted message
+      if (msg.mentions && msg.mentions.length > 0) {
+        text = resolveMentions(text, msg.mentions);
+      }
+      return { sender: senderName, text };
     }
   } catch (err) {
     console.log(`[feishu] Failed to fetch quoted message ${messageId}: ${err.message}`);
@@ -635,22 +716,29 @@ async function fetchQuotedMessage(messageId) {
 /**
  * Format message for C4
  */
-function formatMessage(chatType, userName, text, contextMessages = [], mediaPath = null, { quotedContent } = {}) {
+function formatMessage(chatType, userName, text, contextMessages = [], mediaPath = null, { quotedContent, threadContext } = {}) {
   let prefix = chatType === 'p2p' ? '[Feishu DM]' : '[Feishu GROUP]';
+  let parts = [`${prefix} ${userName} said: `];
 
-  let contextPrefix = '';
-  if (contextMessages.length > 0) {
+  if (threadContext && threadContext.length > 0) {
+    const contextLines = threadContext.map(m => `[${m.user_name || m.user_id}]: ${m.text}`).join('\n');
+    parts.push(`<thread-context>\n${contextLines}\n</thread-context>\n\n`);
+  } else if (contextMessages.length > 0) {
     const contextLines = contextMessages.map(m => `[${m.user_name || m.user_id}]: ${m.text}`).join('\n');
-    contextPrefix = `[Group context - recent messages before this @mention:]\n${contextLines}\n\n[Current message:] `;
+    parts.push(`<group-context>\n${contextLines}\n</group-context>\n\n`);
   }
 
   // Include quoted message content if replying to a specific message
-  let replyPrefix = '';
-  if (quotedContent) {
-    replyPrefix = `[Replying to: "${quotedContent}"] `;
+  // Skip for thread messages (threadContext present) — context is already provided
+  if (quotedContent && !threadContext) {
+    const sender = quotedContent.sender || 'unknown';
+    const quoted = quotedContent.text || '';
+    parts.push(`<replying-to>\n[${sender}]: ${quoted}\n</replying-to>\n\n`);
   }
 
-  let message = `${prefix} ${userName} said: ${contextPrefix}${replyPrefix}${text}`;
+  parts.push(`<current-message>\n${text}\n</current-message>`);
+
+  let message = parts.join('');
 
   if (mediaPath) {
     message += ` ---- file: ${mediaPath}`;
@@ -788,6 +876,8 @@ async function handleMessage(data) {
   const chatType = message.chat_type;
   const rootId = message.root_id || null;
   const parentId = message.parent_id || null;
+  const threadId = message.thread_id || null;
+  const upperMessageId = message.upper_message_id || null;
 
   // Unified dedup check (both websocket and webhook modes)
   if (isDuplicate(messageId)) return;
@@ -806,13 +896,15 @@ async function handleMessage(data) {
     logText = logText ? `${logText}\n${fileInfo}` : fileInfo;
   }
 
-  logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, data._timestamp || null, mentions);
+  logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, data._timestamp || null, mentions, threadId);
 
   // Build structured endpoint with routing metadata
-  const endpoint = buildEndpoint(chatId, { chatType, rootId, parentId, messageId });
+  const endpoint = buildEndpoint(chatId, { chatType, rootId, parentId, messageId, threadId });
 
   // quotedContent is fetched lazily after routing eligibility checks
   let quotedContent = null;
+  // Thread context for topic messages
+  let threadContext = null;
 
   // Private chat handling
   if (chatType === 'p2p') {
@@ -828,10 +920,15 @@ async function handleMessage(data) {
     // Add typing indicator
     addTypingIndicator(messageId);
 
-    // Fetch quoted message after eligibility checks (avoid unnecessary API calls)
-    if (parentId) quotedContent = await fetchQuotedMessage(parentId);
+    // Fetch context: thread context for topic messages, quoted content for replies
+    if (threadId) {
+      threadContext = await getContextWithFallback(threadId, messageId, 'thread');
+    } else if (parentId) {
+      quotedContent = await fetchQuotedMessage(parentId);
+    }
 
     const senderName = await resolveUserName(senderUserId);
+    const cleanText = resolveMentions(text, mentions);
     const rejectReply = (errMsg) => {
       removeTypingIndicator(messageId);
       sendMessage(chatId, errMsg).catch(e => console.error('[feishu] reject reply failed:', e.message));
@@ -850,10 +947,10 @@ async function handleMessage(data) {
       }
       if (mediaPaths.length > 0) {
         const mediaLabel = mediaPaths.length === 1 ? '[image]' : `[${mediaPaths.length} images]`;
-        const msg = formatMessage('p2p', senderName, `${mediaLabel}${text ? ' ' + text : ''}`, [], mediaPaths[0], { quotedContent });
+        const msg = formatMessage('p2p', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, [], mediaPaths[0], { quotedContent, threadContext });
         sendToC4('feishu', endpoint, msg, rejectReply);
       } else {
-        const msg = formatMessage('p2p', senderName, '[image download failed]', [], null, { quotedContent });
+        const msg = formatMessage('p2p', senderName, '[image download failed]', [], null, { quotedContent, threadContext });
         sendToC4('feishu', endpoint, msg, rejectReply);
       }
       return;
@@ -864,16 +961,16 @@ async function handleMessage(data) {
       const localPath = path.join(MEDIA_DIR, `feishu-${timestamp}-${fileName}`);
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
-        const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath, { quotedContent });
+        const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath, { quotedContent, threadContext });
         sendToC4('feishu', endpoint, msg, rejectReply);
       } else {
-        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`, [], null, { quotedContent });
+        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`, [], null, { quotedContent, threadContext });
         sendToC4('feishu', endpoint, msg, rejectReply);
       }
       return;
     }
 
-    const msg = formatMessage('p2p', senderName, text, [], null, { quotedContent });
+    const msg = formatMessage('p2p', senderName, cleanText, [], null, { quotedContent, threadContext });
     sendToC4('feishu', endpoint, msg, rejectReply);
     return;
   }
@@ -917,17 +1014,21 @@ async function handleMessage(data) {
     }
 
     console.log(`[feishu] ${smart ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
-    const contextMessages = getGroupContext(chatId, messageId);
+    const contextMessages = await getGroupContext(chatId, messageId);
     updateCursor(chatId, messageId);
 
     // Add typing indicator before processing
     addTypingIndicator(messageId);
 
-    // Fetch quoted message after eligibility checks (avoid unnecessary API calls)
-    if (parentId) quotedContent = await fetchQuotedMessage(parentId);
+    // Fetch context: thread context for topic messages, quoted content for replies
+    if (threadId) {
+      threadContext = await getContextWithFallback(threadId, messageId, 'thread');
+    } else if (parentId) {
+      quotedContent = await fetchQuotedMessage(parentId);
+    }
 
     const senderName = await resolveUserName(senderUserId);
-    const cleanText = resolveMentions(text, mentions, { stripBot: true, botOpenId });
+    const cleanText = resolveMentions(text, mentions);
     const groupRejectReply = (errMsg) => {
       removeTypingIndicator(messageId);
       sendMessage(chatId, errMsg).catch(e => console.error('[feishu] reject reply failed:', e.message));
@@ -946,7 +1047,7 @@ async function handleMessage(data) {
       }
       if (mediaPaths.length > 0) {
         const mediaLabel = mediaPaths.length === 1 ? '[image]' : `[${mediaPaths.length} images]`;
-        const msg = formatMessage('group', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, contextMessages, mediaPaths[0], { quotedContent });
+        const msg = formatMessage('group', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, contextMessages, mediaPaths[0], { quotedContent, threadContext });
         sendToC4('feishu', endpoint, msg, groupRejectReply);
       } else {
         removeTypingIndicator(messageId);
@@ -959,7 +1060,7 @@ async function handleMessage(data) {
       const localPath = path.join(MEDIA_DIR, `feishu-group-${timestamp}-${fileName}`);
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
-        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, { quotedContent });
+        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, { quotedContent, threadContext });
         sendToC4('feishu', endpoint, msg, groupRejectReply);
       } else {
         removeTypingIndicator(messageId);
@@ -967,7 +1068,7 @@ async function handleMessage(data) {
       return;
     }
 
-    const msg = formatMessage('group', senderName, cleanText || text, contextMessages, null, { quotedContent });
+    const msg = formatMessage('group', senderName, cleanText || text, contextMessages, null, { quotedContent, threadContext });
     sendToC4('feishu', endpoint, msg, groupRejectReply);
   }
 }
@@ -1074,6 +1175,26 @@ function startWebhook(creds) {
     });
   });
 
+  // Internal endpoint: record bot's outgoing messages into in-memory history
+  app.post('/internal/record-outgoing', (req, res) => {
+    const { chatId, threadId, text, messageId } = req.body || {};
+    if (!text) return res.status(400).json({ error: 'missing text' });
+    const entry = {
+      timestamp: new Date().toISOString(),
+      message_id: messageId || `bot_${Date.now()}`,
+      user_id: botOpenId || 'bot',
+      user_name: botAppName || 'bot',
+      text
+    };
+    // Thread messages go to thread only (context isolation)
+    if (threadId) {
+      recordHistoryEntry(threadId, entry);
+    } else if (chatId) {
+      recordHistoryEntry(chatId, entry);
+    }
+    res.json({ ok: true });
+  });
+
   app.listen(PORT, () => {
     console.log(`[feishu] Webhook server running on port ${PORT}`);
   });
@@ -1120,7 +1241,8 @@ if (!creds.app_id || !creds.app_secret) {
 
     if (res.code === 0 && res.bot) {
       botOpenId = res.bot.open_id;
-      console.log(`[feishu] Bot identity: ${res.bot.app_name} (${botOpenId})`);
+      botAppName = res.bot.app_name || 'bot';
+      console.log(`[feishu] Bot identity: ${botAppName} (${botOpenId})`);
     } else {
       console.error(`[feishu] Warning: Could not fetch bot info: ${res.msg}`);
     }

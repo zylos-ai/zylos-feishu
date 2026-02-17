@@ -137,12 +137,12 @@ export async function sendToUser(userId, content, msgType = 'text') {
 /**
  * List messages in a chat
  */
-export async function listMessages(chatId, limit = 20, sortType = 'desc', startTime = null, endTime = null) {
+export async function listMessages(chatId, limit = 20, sortType = 'desc', startTime = null, endTime = null, containerIdType = 'chat') {
   const client = getClient();
 
   try {
     const params = {
-      container_id_type: 'chat',
+      container_id_type: containerIdType,
       container_id: chatId,
       page_size: Math.min(limit, 50),
       sort_type: sortType === 'asc' ? 'ByCreateTimeAsc' : 'ByCreateTimeDesc',
@@ -160,6 +160,7 @@ export async function listMessages(chatId, limit = 20, sortType = 'desc', startT
         content: parseMessageContent(msg.body?.content, msg.msg_type),
         sender: msg.sender?.id,
         createTime: new Date(parseInt(msg.create_time)).toISOString(),
+        mentions: msg.mentions || [],
       }));
 
       return { success: true, messages, hasMore: res.data.has_more };

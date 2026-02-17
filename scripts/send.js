@@ -142,12 +142,12 @@ function splitMessage(text, maxLength) {
 
 /**
  * Send text message with auto-chunking.
- * Routing logic:
- *   - DM (type=p2p): always sendMessage (no reply/quote effect)
- *   - Topic (root exists): ALL chunks reply to parent||root (stay in topic)
+ * Routing logic (unified for DM and group):
+ *   - Topic/reply (root exists): ALL chunks reply to parent||root (stay in thread)
  *   - Group @mention (no root): first chunk replies to msg, rest use sendToGroup
+ *   - DM (no root): sendMessage directly
  *   - Fallback: sendToGroup
- * Reply failures fall back to sendToGroup.
+ * Reply failures fall back to sendMessage (DM) or sendToGroup (group).
  */
 async function sendText(endpoint, text) {
   const chunks = splitMessage(text, MAX_LENGTH);
@@ -159,21 +159,20 @@ async function sendText(endpoint, text) {
     let result;
     const isFirstChunk = i === 0;
 
-    if (isDM) {
-      // DM: always send directly, no reply/quote effect
-      result = await sendMessage(chatId, chunks[i], 'chat_id', 'text');
-    } else if (root) {
-      // Topic thread: ALL chunks stay in topic
+    if (root) {
+      // Topic/reply thread: ALL chunks stay in topic (DM and group alike)
       const replyTarget = parent || root;
       try {
         result = await replyToMessage(replyTarget, chunks[i]);
       } catch (err) {
-        console.log('[feishu] Reply threw, falling back to sendToGroup:', err.message);
+        console.log('[feishu] Reply threw, falling back:', err.message);
         result = { success: false };
       }
       if (!result.success) {
-        console.log('[feishu] Reply failed, falling back to sendToGroup:', result.message);
-        result = await sendToGroup(endpoint, chunks[i]);
+        console.log('[feishu] Reply failed, falling back:', result.message);
+        result = isDM
+          ? await sendMessage(chatId, chunks[i], 'chat_id', 'text')
+          : await sendToGroup(endpoint, chunks[i]);
       }
     } else if (isFirstChunk && msg && isGroup) {
       // Group @mention: first chunk replies to trigger message
@@ -187,6 +186,9 @@ async function sendText(endpoint, text) {
         console.log('[feishu] Reply failed, falling back to sendToGroup:', result.message);
         result = await sendToGroup(endpoint, chunks[i]);
       }
+    } else if (isDM) {
+      // DM without topic/reply: send directly
+      result = await sendMessage(chatId, chunks[i], 'chat_id', 'text');
     } else {
       // Fallback: send to group/chat directly
       result = await sendToGroup(endpoint, chunks[i]);
@@ -264,6 +266,25 @@ function markTypingDone(msgId) {
   }
 }
 
+/**
+ * Notify index.js to record the bot's outgoing message into in-memory history.
+ */
+async function recordOutgoing(text) {
+  const port = config.webhook_port || 3458;
+  const body = JSON.stringify({
+    chatId: parsedEndpoint.chatId,
+    threadId: parsedEndpoint.thread || null,
+    text
+  });
+  try {
+    await fetch(`http://127.0.0.1:${port}/internal/record-outgoing`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body
+    });
+  } catch { /* non-critical */ }
+}
+
 async function send() {
   try {
     if (mediaMatch) {
@@ -271,6 +292,7 @@ async function send() {
       await sendMedia(mediaType, mediaPath);
     } else {
       await sendText(endpointId, message);
+      await recordOutgoing(message);
     }
     // Mark the trigger message as replied (for typing indicator removal)
     markTypingDone(parsedEndpoint.msg);
