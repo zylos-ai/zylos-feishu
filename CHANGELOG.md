@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-02-17
+
+### Added
+- Unified message dedup across WebSocket and webhook modes (#6)
+- Structured endpoint routing with metadata (type, root, parent, msg, thread) (#6)
+- Reply quoting: fetch quoted message content for context (#6)
+- Multiple image support with lazy download (#6)
+- Markdown Card auto-detection: code blocks and tables rendered as interactive cards (#6)
+- Markdown-aware message chunking (preserves code blocks) (#6)
+- In-memory group chat history with configurable limits per group (#6)
+- User name cache with TTL (10 min in-memory, file for cold start) (#6)
+- Group policy system with per-group config and auto-migration from legacy format (#6)
+- Permission error detection with grant URL notification (#6)
+- Typing indicator with emoji reaction and 120s auto-timeout (#6)
+- Thread context isolation: thread messages stored separately (#6)
+- Lazy load fallback: fetch message history from API on first access after restart (#6)
+- Bot reply recording via `/internal/record-outgoing` endpoint with auth (#6)
+
+### Security
+- parseEndpoint key whitelist to prevent prototype pollution (#6)
+- FEISHU_APP_ID missing warning in send.js (#6)
+
+### Changed
+- Message dedup map now cleaned periodically via timer (#6)
+- Typing indicator retry with deferred cleanup on failure (#6)
+- Admin CLI: new group management commands (list-groups, add-group, set-group-policy, etc.) (#6)
+
 ## [0.2.0] - 2026-02-15
 
 ### Added
