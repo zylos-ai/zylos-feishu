@@ -22,7 +22,8 @@ function persistConfig(config) {
   }
 }
 
-const ALLOWED_GROUP_POLICIES = ['disabled', 'allowlist', 'smart', 'mention'];
+// Global group policies (smart/mention are per-group modes, not global policies)
+const ALLOWED_GROUP_POLICIES = ['disabled', 'allowlist', 'open'];
 
 function parseGroupId(chatId) {
   const value = String(chatId || '').trim();
@@ -300,7 +301,7 @@ const commands = {
 
   // Legacy commands mapped to new group policy
   'enable-group-whitelist': () => commands['set-group-policy']('allowlist'),
-  'disable-group-whitelist': () => commands['set-group-policy']('mention'),
+  'disable-group-whitelist': () => commands['set-group-policy']('open'),
 
   'show-owner': () => {
     const config = loadConfig();
@@ -337,7 +338,7 @@ Commands:
   list-groups                         List all configured groups
   add-group <chat_id> <name> [mode]   Add a group (mode: mention|smart)
   remove-group <chat_id>              Remove a group
-  set-group-policy <policy>           Set group policy (disabled|allowlist|smart|mention)
+  set-group-policy <policy>           Set group policy (disabled|allowlist|open)
   set-group-allowfrom <chat_id> <ids> Set per-group allowed senders
   set-group-history-limit <id> <n>    Set per-group history message limit
   migrate-groups                      Migrate legacy group config to new format
@@ -349,7 +350,7 @@ Commands:
   remove-allowed-group <id>           → remove-group
   remove-smart-group <id>             → remove-group
   enable-group-whitelist              → set-group-policy allowlist
-  disable-group-whitelist             → set-group-policy mention
+  disable-group-whitelist             → set-group-policy open
 
   Whitelist (access control):
   list-whitelist                      List whitelist entries

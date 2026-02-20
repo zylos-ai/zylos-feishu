@@ -126,26 +126,30 @@ export function watchConfig(onChange) {
     configReloadTimer = null;
   }
 
-  if (fs.existsSync(CONFIG_PATH)) {
-    const scheduleReload = (eventType) => {
-      if (eventType !== 'change' && eventType !== 'rename') return;
-      if (configReloadTimer) clearTimeout(configReloadTimer);
-      configReloadTimer = setTimeout(() => {
-        configReloadTimer = null;
-        if (!fs.existsSync(CONFIG_PATH)) {
-          console.warn('[feishu] Config file missing after fs.watch event, skipping reload');
-          return;
-        }
-        console.log('[feishu] Config file changed, reloading...');
-        loadConfig();
-        if (onChange) {
-          onChange(config);
-        }
-      }, 100);
-    };
+  const configDir = path.dirname(CONFIG_PATH);
+  const configBase = path.basename(CONFIG_PATH);
 
-    configWatcher = fs.watch(CONFIG_PATH, (eventType) => {
-      scheduleReload(eventType);
+  const scheduleReload = () => {
+    if (configReloadTimer) clearTimeout(configReloadTimer);
+    configReloadTimer = setTimeout(() => {
+      configReloadTimer = null;
+      if (!fs.existsSync(CONFIG_PATH)) {
+        console.warn('[feishu] Config file missing after fs.watch event, skipping reload');
+        return;
+      }
+      console.log('[feishu] Config file changed, reloading...');
+      loadConfig();
+      if (onChange) {
+        onChange(config);
+      }
+    }, 100);
+  };
+
+  if (fs.existsSync(configDir)) {
+    configWatcher = fs.watch(configDir, (eventType, filename) => {
+      if (filename === configBase) {
+        scheduleReload();
+      }
     });
     configWatcher.on('error', (err) => {
       console.warn(`[feishu] Config watcher error: ${err.message}`);
