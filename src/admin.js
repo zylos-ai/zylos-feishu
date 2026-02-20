@@ -15,6 +15,21 @@ function getGroupsMap(config) {
   return config.groups || {};
 }
 
+function persistConfig(config) {
+  if (!saveConfig(config)) {
+    console.error('Failed to save config');
+    process.exit(1);
+  }
+}
+
+// Global group policies (smart/mention are per-group modes, not global policies)
+const ALLOWED_GROUP_POLICIES = ['disabled', 'allowlist', 'open'];
+
+function parseGroupId(chatId) {
+  const value = String(chatId || '').trim();
+  return value.length > 0 ? value : null;
+}
+
 // Commands
 const commands = {
   'show': () => {
@@ -88,7 +103,7 @@ const commands = {
         added_at: new Date().toISOString()
       };
     }
-    saveConfig(config);
+    persistConfig(config);
     console.log(`Added group: ${chatId} (${name}) [${mode}]`);
     console.log('Run: pm2 restart zylos-feishu');
   },
@@ -135,7 +150,7 @@ const commands = {
       return;
     }
 
-    saveConfig(config);
+    persistConfig(config);
     console.log('Run: pm2 restart zylos-feishu');
   },
 
@@ -144,46 +159,56 @@ const commands = {
   'remove-smart-group': (chatId) => commands['remove-group'](chatId),
 
   'set-group-policy': (policy) => {
-    if (!['open', 'allowlist', 'disabled'].includes(policy)) {
-      console.error('Usage: admin.js set-group-policy <open|allowlist|disabled>');
+    if (!ALLOWED_GROUP_POLICIES.includes(policy)) {
+      console.error(`Usage: admin.js set-group-policy <${ALLOWED_GROUP_POLICIES.join('|')}>`);
       process.exit(1);
     }
     const config = loadConfig();
     config.groupPolicy = policy;
-    saveConfig(config);
+    persistConfig(config);
     console.log(`Group policy set to: ${policy}`);
     console.log('Run: pm2 restart zylos-feishu');
   },
 
   'set-group-allowfrom': (chatId, ...userIds) => {
-    if (!chatId || userIds.length === 0) {
+    const safeChatId = parseGroupId(chatId);
+    const safeUserIds = userIds.map(id => String(id || '').trim()).filter(Boolean);
+    if (!safeChatId || safeUserIds.length === 0) {
       console.error('Usage: admin.js set-group-allowfrom <chat_id> <user_id1> [user_id2] ...');
       process.exit(1);
     }
     const config = loadConfig();
-    if (!config.groups?.[chatId]) {
-      console.error(`Group ${chatId} not configured. Add it first with add-group.`);
+    if (!config.groups?.[safeChatId]) {
+      console.error(`Group ${safeChatId} not configured. Add it first with add-group.`);
       process.exit(1);
     }
-    config.groups[chatId].allowFrom = userIds;
-    saveConfig(config);
-    console.log(`Set allowFrom for ${chatId}: [${userIds.join(', ')}]`);
+    config.groups[safeChatId].allowFrom = safeUserIds;
+    persistConfig(config);
+    console.log(`Set allowFrom for ${safeChatId}: [${safeUserIds.join(', ')}]`);
     console.log('Run: pm2 restart zylos-feishu');
   },
 
   'set-group-history-limit': (chatId, limit) => {
-    if (!chatId || !limit) {
+    const safeChatId = parseGroupId(chatId);
+    const limitText = String(limit || '').trim();
+    if (!safeChatId || !/^\d+$/.test(limitText)) {
       console.error('Usage: admin.js set-group-history-limit <chat_id> <limit>');
+      console.error('Limit must be an integer between 1 and 200.');
+      process.exit(1);
+    }
+    const parsedLimit = parseInt(limitText, 10);
+    if (parsedLimit < 1 || parsedLimit > 200) {
+      console.error(`Invalid history limit "${limit}". Must be between 1 and 200.`);
       process.exit(1);
     }
     const config = loadConfig();
-    if (!config.groups?.[chatId]) {
-      console.error(`Group ${chatId} not configured. Add it first with add-group.`);
+    if (!config.groups?.[safeChatId]) {
+      console.error(`Group ${safeChatId} not configured. Add it first with add-group.`);
       process.exit(1);
     }
-    config.groups[chatId].historyLimit = parseInt(limit, 10);
-    saveConfig(config);
-    console.log(`Set historyLimit for ${chatId}: ${limit}`);
+    config.groups[safeChatId].historyLimit = parsedLimit;
+    persistConfig(config);
+    console.log(`Set historyLimit for ${safeChatId}: ${parsedLimit}`);
     console.log('Run: pm2 restart zylos-feishu');
   },
 
@@ -217,7 +242,7 @@ const commands = {
     if (!config.whitelist.group_users.includes(userId)) {
       config.whitelist.group_users.push(userId);
     }
-    saveConfig(config);
+    persistConfig(config);
     console.log(`Added ${userId} to whitelist (private + group)`);
     if (!config.whitelist.enabled) {
       console.log('Note: Whitelist is currently disabled (all users allowed).');
@@ -250,7 +275,7 @@ const commands = {
     }
 
     if (removed) {
-      saveConfig(config);
+      persistConfig(config);
       console.log(`Removed ${userId} from whitelist`);
     } else {
       console.log(`${userId} not found in whitelist`);
@@ -264,7 +289,7 @@ const commands = {
     } else {
       config.whitelist.enabled = true;
     }
-    saveConfig(config);
+    persistConfig(config);
     console.log('Whitelist enabled. Only owner + whitelisted users can interact.');
     console.log('Run: pm2 restart zylos-feishu');
   },
@@ -274,7 +299,7 @@ const commands = {
     if (config.whitelist) {
       config.whitelist.enabled = false;
     }
-    saveConfig(config);
+    persistConfig(config);
     console.log('Whitelist disabled. All users can interact.');
     console.log('Run: pm2 restart zylos-feishu');
   },
@@ -299,7 +324,7 @@ const commands = {
     const config = loadConfig();
     const result = migrateGroupConfig(config);
     if (result.migrated) {
-      saveConfig(config);
+      persistConfig(config);
       console.log('Group config migrated:');
       result.migrations.forEach(m => console.log('  - ' + m));
     } else {
@@ -318,7 +343,7 @@ Commands:
   list-groups                         List all configured groups
   add-group <chat_id> <name> [mode]   Add a group (mode: mention|smart)
   remove-group <chat_id>              Remove a group
-  set-group-policy <policy>           Set group policy (open|allowlist|disabled)
+  set-group-policy <policy>           Set group policy (disabled|allowlist|open)
   set-group-allowfrom <chat_id> <ids> Set per-group allowed senders
   set-group-history-limit <id> <n>    Set per-group history message limit
   migrate-groups                      Migrate legacy group config to new format
@@ -341,7 +366,7 @@ Commands:
 
   show-owner                          Show current owner
 
-Note: Owner can always @mention bot in any group regardless of policy.
+Note: Owner bypass works in allowlist/open modes; disabled policy blocks all group messages.
 
 After changes, restart bot: pm2 restart zylos-feishu
 `);

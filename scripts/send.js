@@ -83,7 +83,10 @@ function splitMessage(text, maxLength) {
 
   while (remaining.length > 0) {
     if (remaining.length <= maxLength) {
-      chunks.push(remaining);
+      const finalChunk = remaining.trim();
+      if (finalChunk.length > 0) {
+        chunks.push(finalChunk);
+      }
       break;
     }
 
@@ -136,7 +139,10 @@ function splitMessage(text, maxLength) {
       }
     }
 
-    chunks.push(remaining.substring(0, breakAt).trim());
+    const nextChunk = remaining.substring(0, breakAt).trim();
+    if (nextChunk.length > 0) {
+      chunks.push(nextChunk);
+    }
     remaining = remaining.substring(breakAt).trim();
   }
 
@@ -262,8 +268,11 @@ async function sendMedia(type, filePath) {
 function markTypingDone(msgId) {
   if (!msgId) return;
   try {
+    const safeMsgId = String(msgId).replace(/[^a-zA-Z0-9_-]/g, '_');
     fs.mkdirSync(TYPING_DIR, { recursive: true });
-    fs.writeFileSync(path.join(TYPING_DIR, `${msgId}.done`), String(Date.now()));
+    const donePath = path.resolve(TYPING_DIR, `${safeMsgId}.done`);
+    if (!donePath.startsWith(path.resolve(TYPING_DIR) + path.sep)) return;
+    fs.writeFileSync(donePath, String(Date.now()));
   } catch {
     // Non-critical
   }
@@ -273,34 +282,53 @@ function markTypingDone(msgId) {
  * Notify index.js to record the bot's outgoing message into in-memory history.
  */
 async function recordOutgoing(text) {
-  const appId = process.env.FEISHU_APP_ID;
-  if (!appId) {
-    console.warn('[feishu] Warning: FEISHU_APP_ID not set — record-outgoing will be rejected (403)');
+  let internalSecret = process.env.FEISHU_INTERNAL_SECRET;
+  if (!internalSecret) {
+    // Fallback: read token from file (written by index.js at startup)
+    try {
+      internalSecret = fs.readFileSync(path.join(DATA_DIR, '.internal-token'), 'utf8').trim();
+    } catch {}
+  }
+  if (!internalSecret) {
+    console.warn('[feishu] Warning: FEISHU_INTERNAL_SECRET not set — record-outgoing will be rejected (403)');
     return;
   }
   const port = config.webhook_port || 3458;
+  const safeText = String(text || '').slice(0, 4000);
   const body = JSON.stringify({
     chatId: parsedEndpoint.chatId,
     threadId: parsedEndpoint.thread || null,
-    text
+    text: safeText
   });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
   try {
     await fetch(`http://127.0.0.1:${port}/internal/record-outgoing`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Internal-Token': appId,
+        'X-Internal-Token': internalSecret,
       },
-      body
+      body,
+      signal: controller.signal
     });
   } catch { /* non-critical */ }
+  finally {
+    clearTimeout(timer);
+  }
 }
 
 async function send() {
   try {
+    if (message.trim() === '[SKIP]') {
+      markTypingDone(parsedEndpoint.msg);
+      process.exit(0);
+    }
+
     if (mediaMatch) {
       const [, mediaType, mediaPath] = mediaMatch;
       await sendMedia(mediaType, mediaPath);
+      await recordOutgoing(mediaType === 'image' ? '[sent image]' : '[sent file]');
     } else {
       await sendText(endpointId, message);
       await recordOutgoing(message);

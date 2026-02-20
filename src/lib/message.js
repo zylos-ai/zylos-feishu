@@ -21,6 +21,7 @@ async function getAccessToken() {
     url: 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
     headers: { 'Content-Type': 'application/json' },
     data: { app_id: creds.app_id, app_secret: creds.app_secret },
+    timeout: 30000,
     proxy
   });
 
@@ -198,6 +199,7 @@ export async function downloadImage(messageId, imageKey, savePath) {
       url: `https://open.feishu.cn/open-apis/im/v1/messages/${messageId}/resources/${imageKey}?type=image`,
       headers: { 'Authorization': 'Bearer ' + token },
       responseType: 'arraybuffer',
+      timeout: 30000,
       proxy
     });
 
@@ -232,6 +234,7 @@ export async function uploadImage(imagePath, imageType = 'message') {
         ...form.getHeaders()
       },
       data: form,
+      timeout: 30000,
       proxy
     });
 
@@ -284,6 +287,7 @@ export async function downloadFile(messageId, fileKey, savePath) {
       url: `https://open.feishu.cn/open-apis/im/v1/messages/${messageId}/resources/${fileKey}?type=file`,
       headers: { 'Authorization': 'Bearer ' + token },
       responseType: 'arraybuffer',
+      timeout: 30000,
       proxy
     });
 
