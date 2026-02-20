@@ -39,6 +39,7 @@ let isShuttingDown = false;
 // Initialize
 let config = getConfig();
 const connectionMode = config.connection_mode || 'websocket';
+const INTERNAL_SECRET = crypto.randomUUID();
 console.log(`[feishu] Starting (${connectionMode} mode)...`);
 console.log(`[feishu] Data directory: ${DATA_DIR}`);
 
@@ -717,6 +718,7 @@ function sendToC4(source, endpoint, content, onReject) {
     console.error('[feishu] sendToC4 called with empty content');
     return;
   }
+  const childEnv = { ...process.env, FEISHU_INTERNAL_SECRET: INTERNAL_SECRET };
   const args = [
     C4_RECEIVE,
     '--channel', source,
@@ -725,7 +727,7 @@ function sendToC4(source, endpoint, content, onReject) {
     '--content', content
   ];
 
-  execFile('node', args, { encoding: 'utf8', timeout: 35000 }, (error, stdout) => {
+  execFile('node', args, { encoding: 'utf8', timeout: 35000, env: childEnv }, (error, stdout) => {
     if (!error) {
       console.log(`[feishu] Sent to C4: ${content.substring(0, 50)}...`);
       return;
@@ -738,7 +740,7 @@ function sendToC4(source, endpoint, content, onReject) {
     }
     console.warn(`[feishu] C4 send failed, retrying in 2s: ${error.message}`);
     setTimeout(() => {
-      execFile('node', args, { encoding: 'utf8', timeout: 35000 }, (retryError, retryStdout) => {
+      execFile('node', args, { encoding: 'utf8', timeout: 35000, env: childEnv }, (retryError, retryStdout) => {
         if (!retryError) {
           console.log(`[feishu] Sent to C4 (retry): ${content.substring(0, 50)}...`);
           return;
@@ -879,6 +881,17 @@ When uncertain, prefer NOT to reply. Reply with exactly [SKIP] to stay silent.
   }
 
   return message;
+}
+
+function buildSafeDownloadPath(downloadDir, prefix, fileName) {
+  const safeName = path.basename(fileName || 'file').replace(/[^a-zA-Z0-9_.-]/g, '_') || 'file';
+  const filePath = path.join(downloadDir, `${prefix}-${safeName}`);
+  const resolvedDir = path.resolve(downloadDir);
+  const resolvedPath = path.resolve(filePath);
+  if (!resolvedPath.startsWith(resolvedDir + path.sep)) {
+    throw new Error('Path traversal blocked');
+  }
+  return filePath;
 }
 
 /**
@@ -1023,6 +1036,14 @@ async function handleMessage(data) {
   const sender = data.sender;
   const mentions = message.mentions;
 
+  const senderId = sender.sender_id?.open_id || sender.sender_id?.app_id || sender.sender_id?.user_id || '';
+  if (senderId && (
+    String(senderId) === String(botAppId || '') ||
+    String(senderId) === String(botOpenId || '') ||
+    String(senderId) === String(config.app_id || '') ||
+    String(senderId) === String(config.bot_open_id || '')
+  )) return;
+
   const senderUserId = sender.sender_id?.user_id;
   const senderOpenId = sender.sender_id?.open_id;
   const chatId = message.chat_id;
@@ -1123,9 +1144,14 @@ async function handleMessage(data) {
 
     if (fileKey) {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const localPath = path.join(MEDIA_DIR, `feishu-${timestamp}-${fileName}`);
-      const result = await downloadFile(messageId, fileKey, localPath);
-      if (result.success) {
+      let localPath = null;
+      try {
+        localPath = buildSafeDownloadPath(MEDIA_DIR, `feishu-${timestamp}`, fileName);
+      } catch (err) {
+        console.warn(`[feishu] Blocked unsafe file path: ${err.message}`);
+      }
+      const result = localPath ? await downloadFile(messageId, fileKey, localPath) : { success: false };
+      if (result.success && localPath) {
         const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath, { quotedContent, threadContext, threadRootId });
         sendToC4('feishu', endpoint, msg, rejectReply);
       } else {
@@ -1257,9 +1283,14 @@ async function handleMessage(data) {
       }
 
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const localPath = path.join(MEDIA_DIR, `feishu-group-${timestamp}-${fileName}`);
-      const result = await downloadFile(messageId, fileKey, localPath);
-      if (result.success) {
+      let localPath = null;
+      try {
+        localPath = buildSafeDownloadPath(MEDIA_DIR, `feishu-group-${timestamp}`, fileName);
+      } catch (err) {
+        console.warn(`[feishu] Blocked unsafe file path: ${err.message}`);
+      }
+      const result = localPath ? await downloadFile(messageId, fileKey, localPath) : { success: false };
+      if (result.success && localPath) {
         const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, { quotedContent, threadContext, threadRootId });
         sendToC4('feishu', endpoint, msg, groupRejectReply);
       } else {
@@ -1379,9 +1410,9 @@ function startWebhook(creds) {
 
   // Internal endpoint: record bot's outgoing messages into in-memory history
   app.post('/internal/record-outgoing', (req, res) => {
-    // Validate internal token (app_id) to prevent unauthorized injection
+    // Validate internal token (process-local secret) to prevent unauthorized injection
     const token = req.headers['x-internal-token'];
-    if (!token || token !== botAppId) {
+    if (!token || token !== INTERNAL_SECRET) {
       return res.status(403).json({ error: 'unauthorized' });
     }
     const { chatId, threadId, text, messageId } = req.body || {};
@@ -1407,9 +1438,9 @@ function startWebhook(creds) {
   let attempt = 0;
 
   const listenWithRetry = () => {
-    const server = app.listen(PORT, () => {
+    const server = app.listen(PORT, '127.0.0.1', () => {
       webhookServer = server;
-      console.log(`[feishu] Webhook server running on port ${PORT}`);
+      console.log(`[feishu] Webhook server running on 127.0.0.1:${PORT}`);
     });
 
     server.on('error', (err) => {

@@ -279,9 +279,9 @@ function markTypingDone(msgId) {
  * Notify index.js to record the bot's outgoing message into in-memory history.
  */
 async function recordOutgoing(text) {
-  const appId = process.env.FEISHU_APP_ID;
-  if (!appId) {
-    console.warn('[feishu] Warning: FEISHU_APP_ID not set — record-outgoing will be rejected (403)');
+  const internalSecret = process.env.FEISHU_INTERNAL_SECRET;
+  if (!internalSecret) {
+    console.warn('[feishu] Warning: FEISHU_INTERNAL_SECRET not set — record-outgoing will be rejected (403)');
     return;
   }
   const port = config.webhook_port || 3458;
@@ -298,7 +298,7 @@ async function recordOutgoing(text) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Internal-Token': appId,
+        'X-Internal-Token': internalSecret,
       },
       body,
       signal: controller.signal
