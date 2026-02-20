@@ -1408,6 +1408,11 @@ function startWebhook(creds) {
 
     // Handle message event asynchronously
     if (event.header?.event_type === 'im.message.receive_v1') {
+      // Validate required payload shape
+      if (!event.event?.message || !event.event?.sender) {
+        console.warn('[feishu] Malformed message event: missing event.message or event.sender');
+        return;
+      }
       // Dedup is handled inside handleMessage() (unified for both modes)
 
       // Normalize data shape to match WSClient format for shared handleMessage
