@@ -190,10 +190,15 @@ const commands = {
 
   'set-group-history-limit': (chatId, limit) => {
     const safeChatId = parseGroupId(chatId);
-    const parsedLimit = parseInt(limit, 10);
-    if (!safeChatId || Number.isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 200) {
+    const limitText = String(limit || '').trim();
+    if (!safeChatId || !/^\d+$/.test(limitText)) {
       console.error('Usage: admin.js set-group-history-limit <chat_id> <limit>');
-      console.error('Limit must be an integer between 1 and 200');
+      console.error('Limit must be an integer between 1 and 200.');
+      process.exit(1);
+    }
+    const parsedLimit = parseInt(limitText, 10);
+    if (parsedLimit < 1 || parsedLimit > 200) {
+      console.error(`Invalid history limit "${limit}". Must be between 1 and 200.`);
       process.exit(1);
     }
     const config = loadConfig();
