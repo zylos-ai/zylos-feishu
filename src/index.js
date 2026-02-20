@@ -583,7 +583,11 @@ async function logMessage(chatType, chatId, userId, openId, text, messageId, tim
     console.error(`[feishu] Log path escapes LOGS_DIR: ${logFile}`);
     return;
   }
-  fs.appendFileSync(logFile, logLine);
+  try {
+    fs.appendFileSync(logFile, logLine);
+  } catch (err) {
+    console.error(`[feishu] Failed to write log: ${err.message}`);
+  }
 
   // In-memory history for context (group chats and threads)
   // Thread messages go to thread history only (context isolation)
