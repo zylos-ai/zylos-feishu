@@ -1444,9 +1444,9 @@ function startWebhook(creds) {
   let attempt = 0;
 
   const listenWithRetry = () => {
-    const server = app.listen(PORT, '127.0.0.1', () => {
+    const server = app.listen(PORT, () => {
       webhookServer = server;
-      console.log(`[feishu] Webhook server running on 127.0.0.1:${PORT}`);
+      console.log(`[feishu] Webhook server running on 0.0.0.0:${PORT}`);
     });
 
     server.on('error', (err) => {
