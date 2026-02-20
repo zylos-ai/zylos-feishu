@@ -48,11 +48,11 @@ if (fs.existsSync(configPath)) {
       migrated = true;
       migrations.push('Added bot settings');
     }
-    // Clean up removed field
-    if (config.bot.verification_token !== undefined) {
-      delete config.bot.verification_token;
+    // Ensure verification_token exists (required for webhook mode)
+    if (config.bot.verification_token === undefined) {
+      config.bot.verification_token = '';
       migrated = true;
-      migrations.push('Removed unused bot.verification_token');
+      migrations.push('Added bot.verification_token placeholder');
     }
 
     // Migration 4: Ensure owner structure
