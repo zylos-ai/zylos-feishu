@@ -147,8 +147,7 @@ export function watchConfig(onChange) {
 
   if (fs.existsSync(configDir)) {
     configWatcher = fs.watch(configDir, (eventType, filename) => {
-      // filename can be null on some platforms; treat as relevant
-      if (!filename || String(filename) === configBase) {
+      if (filename && String(filename) === configBase) {
         scheduleReload();
       }
     });
