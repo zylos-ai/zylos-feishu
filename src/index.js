@@ -972,7 +972,13 @@ function extractPostText(paragraphs, messageId) {
 // Returns imageKeys as array (all images from post messages, or single image)
 function extractMessageContent(message) {
   const msgType = message.message_type;
-  const content = JSON.parse(message.content || '{}');
+  let content;
+  try {
+    content = JSON.parse(message.content || '{}');
+  } catch {
+    console.error(`[feishu] Failed to parse message content: ${String(message.content).slice(0, 100)}`);
+    content = {};
+  }
 
   switch (msgType) {
     case 'text':
@@ -1143,7 +1149,7 @@ async function handleMessage(data) {
       const mediaPaths = [];
       for (const imgKey of imageKeys) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const localPath = path.join(MEDIA_DIR, `feishu-${timestamp}-${imgKey.slice(-8)}.png`);
+        const localPath = path.join(MEDIA_DIR, `feishu-${timestamp}-${imgKey.replace(/[^a-zA-Z0-9_-]/g, '').slice(-8)}.png`);
         const result = await downloadImage(messageId, imgKey, localPath);
         if (result.success) {
           mediaPaths.push(localPath);
@@ -1275,7 +1281,7 @@ async function handleMessage(data) {
       const mediaPaths = [];
       for (const imgKey of imageKeys) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const localPath = path.join(MEDIA_DIR, `feishu-group-${timestamp}-${imgKey.slice(-8)}.png`);
+        const localPath = path.join(MEDIA_DIR, `feishu-group-${timestamp}-${imgKey.replace(/[^a-zA-Z0-9_-]/g, '').slice(-8)}.png`);
         const result = await downloadImage(messageId, imgKey, localPath);
         if (result.success) {
           mediaPaths.push(localPath);
