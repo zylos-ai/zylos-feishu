@@ -279,7 +279,13 @@ function markTypingDone(msgId) {
  * Notify index.js to record the bot's outgoing message into in-memory history.
  */
 async function recordOutgoing(text) {
-  const internalSecret = process.env.FEISHU_INTERNAL_SECRET;
+  let internalSecret = process.env.FEISHU_INTERNAL_SECRET;
+  if (!internalSecret) {
+    // Fallback: read token from file (written by index.js at startup)
+    try {
+      internalSecret = fs.readFileSync(path.join(DATA_DIR, '.internal-token'), 'utf8').trim();
+    } catch {}
+  }
   if (!internalSecret) {
     console.warn('[feishu] Warning: FEISHU_INTERNAL_SECRET not set — record-outgoing will be rejected (403)');
     return;

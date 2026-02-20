@@ -40,6 +40,9 @@ let isShuttingDown = false;
 let config = getConfig();
 const connectionMode = config.connection_mode || 'websocket';
 const INTERNAL_SECRET = crypto.randomUUID();
+// Persist token to file so send.js (spawned by C4 in a separate process tree) can read it
+const TOKEN_FILE = path.join(DATA_DIR, '.internal-token');
+try { fs.writeFileSync(TOKEN_FILE, INTERNAL_SECRET, { mode: 0o600 }); } catch {}
 console.log(`[feishu] Starting (${connectionMode} mode)...`);
 console.log(`[feishu] Data directory: ${DATA_DIR}`);
 
