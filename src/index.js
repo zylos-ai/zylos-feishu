@@ -10,7 +10,7 @@
 import dotenv from 'dotenv';
 import express from 'express';
 import crypto from 'crypto';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import * as Lark from '@larksuiteoapi/node-sdk';
@@ -18,8 +18,8 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 // Load .env from ~/zylos/.env (absolute path, not cwd-dependent)
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
-import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials } from './lib/config.js';
-import { downloadImage, downloadFile, sendMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
+import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials, stopWatching } from './lib/config.js';
+import { downloadImage, downloadFile, sendMessage, replyToMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 import { listChatMembers } from './lib/chat.js';
 
@@ -33,6 +33,8 @@ let botAppName = '';
 
 // WSClient instance for graceful shutdown (websocket mode only)
 let wsClient = null;
+let webhookServer = null;
+let isShuttingDown = false;
 
 // Initialize
 let config = getConfig();
@@ -74,7 +76,7 @@ function isDuplicate(messageId) {
 }
 
 // Periodic cleanup of expired dedup entries (avoids accumulation in low-traffic chats)
-setInterval(() => {
+const dedupCleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [id, ts] of processedMessages) {
     if (now - ts > DEDUP_TTL) processedMessages.delete(id);
@@ -115,7 +117,16 @@ function loadCursors() {
 }
 
 function saveCursors(cursors) {
-  fs.writeFileSync(CURSORS_PATH, JSON.stringify(cursors, null, 2));
+  const tmpPath = CURSORS_PATH + '.tmp';
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(cursors, null, 2));
+    fs.renameSync(tmpPath, CURSORS_PATH);
+    return true;
+  } catch (err) {
+    console.log(`[feishu] Failed to save cursors: ${err.message}`);
+    try { fs.unlinkSync(tmpPath); } catch {}
+    return false;
+  }
 }
 
 // ============================================================
@@ -233,7 +244,7 @@ function checkTypingDoneMarkers() {
 }
 
 // Poll for typing-done markers every 2 seconds
-setInterval(checkTypingDoneMarkers, 2000);
+const typingCheckInterval = setInterval(checkTypingDoneMarkers, 2000);
 
 // ============================================================
 // Permission error tracking (cooldown to avoid spam)
@@ -307,15 +318,19 @@ function persistUserCache() {
   for (const [userId, entry] of userCacheMemory) {
     obj[userId] = entry.name;
   }
+  const tmpPath = USER_CACHE_PATH + '.tmp';
   try {
-    fs.writeFileSync(USER_CACHE_PATH, JSON.stringify(obj, null, 2));
+    fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2));
+    fs.renameSync(tmpPath, USER_CACHE_PATH);
   } catch (err) {
     console.log(`[feishu] Failed to persist user cache: ${err.message}`);
+    try { fs.unlinkSync(tmpPath); } catch {}
+    _userCacheDirty = true;
   }
 }
 
 // Persist cache every 5 minutes
-setInterval(persistUserCache, 5 * 60 * 1000);
+const userCachePersistInterval = setInterval(persistUserCache, 5 * 60 * 1000);
 
 // Load file cache on startup
 loadUserCacheFromFile();
@@ -329,26 +344,31 @@ let groupCursors = loadCursors();
 // File logs are kept for audit; this Map is used for fast context.
 // ============================================================
 const DEFAULT_HISTORY_LIMIT = 5;
-const chatHistories = new Map(); // Map<chatId, Array<{ message_id, user_name, user_id, text, timestamp }>>
+const chatHistories = new Map(); // Map<historyKey, Array<{ message_id, user_name, user_id, text, timestamp }>>
+
+function getHistoryKey(chatId, threadId = null) {
+  return threadId ? `${chatId}:${threadId}` : chatId;
+}
 
 /**
  * Record a message entry into in-memory chat history.
  * Caps entries at the configured limit per chat.
  */
-function recordHistoryEntry(chatId, entry) {
-  if (!chatHistories.has(chatId)) {
-    chatHistories.set(chatId, []);
+function recordHistoryEntry(historyKey, entry) {
+  if (!chatHistories.has(historyKey)) {
+    chatHistories.set(historyKey, []);
   }
-  const history = chatHistories.get(chatId);
+  const history = chatHistories.get(historyKey);
   // Deduplicate by message_id (lazy load + real-time can overlap)
   if (entry.message_id && history.some(m => m.message_id === entry.message_id)) {
     return;
   }
   history.push(entry);
-  const limit = getGroupHistoryLimit(chatId);
+  const baseChatId = historyKey.includes(':') ? historyKey.split(':')[0] : historyKey;
+  const limit = getGroupHistoryLimit(baseChatId);
   // Cap at 2x limit to avoid unbounded growth; trim to limit when reading
   if (history.length > limit * 2) {
-    chatHistories.set(chatId, history.slice(-limit));
+    chatHistories.set(historyKey, history.slice(-limit));
   }
 }
 
@@ -356,11 +376,12 @@ function recordHistoryEntry(chatId, entry) {
  * Get recent context messages from in-memory history.
  * Excludes the current message itself.
  */
-function getInMemoryContext(chatId, currentMessageId) {
-  const history = chatHistories.get(chatId);
+function getInMemoryContext(historyKey, currentMessageId) {
+  const history = chatHistories.get(historyKey);
   if (!history || history.length === 0) return [];
 
-  const limit = getGroupHistoryLimit(chatId);
+  const baseChatId = historyKey.includes(':') ? historyKey.split(':')[0] : historyKey;
+  const limit = getGroupHistoryLimit(baseChatId);
 
   // Filter out the current message and get recent entries
   const filtered = history.filter(m => m.message_id !== currentMessageId);
@@ -372,7 +393,7 @@ function getInMemoryContext(chatId, currentMessageId) {
  * Pin the root message to the first position in thread context.
  * If root was trimmed by the context limit, fetch it from the full history.
  */
-function pinRootMessage(context, rootId, threadId) {
+function pinRootMessage(context, rootId, historyKey) {
   if (!rootId || !context) return context;
   const result = [...context];
   const rootIdx = result.findIndex(m => m.message_id === rootId);
@@ -382,7 +403,7 @@ function pinRootMessage(context, rootId, threadId) {
     result.unshift(root);
   } else if (rootIdx === -1) {
     // Root was trimmed by limit — try to recover from full history
-    const fullHistory = chatHistories.get(threadId);
+    const fullHistory = chatHistories.get(historyKey);
     if (fullHistory) {
       const rootEntry = fullHistory.find(m => m.message_id === rootId);
       if (rootEntry) {
@@ -426,19 +447,19 @@ async function preloadGroupMembers(chatId) {
   }
 }
 
-async function getContextWithFallback(containerId, currentMessageId, containerType = 'chat') {
-  if (_lazyLoadedContainers.has(containerId)) {
-    return getInMemoryContext(containerId, currentMessageId);
+async function getContextWithFallback(containerId, currentMessageId, containerType = 'chat', historyKey = containerId, historyLimit = null) {
+  if (_lazyLoadedContainers.has(historyKey)) {
+    return getInMemoryContext(historyKey, currentMessageId);
   }
 
   // First access after restart — try to fetch from API
   try {
-    const limit = containerType === 'thread'
+    const limit = historyLimit || (containerType === 'thread'
       ? (config.message?.context_messages || DEFAULT_HISTORY_LIMIT)
-      : getGroupHistoryLimit(containerId);
+      : getGroupHistoryLimit(containerId));
     const result = await listMessages(containerId, limit, 'desc', null, null, containerType);
     if (result.success) {
-      _lazyLoadedContainers.add(containerId);
+      _lazyLoadedContainers.add(historyKey);
       if (result.messages.length > 0) {
         // Sort by createTime to ensure chronological order
         // (reverse of desc is usually correct, but thread root may be returned out of order)
@@ -458,7 +479,7 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
           if (msg.mentions && msg.mentions.length > 0) {
             text = resolveMentions(text, msg.mentions);
           }
-          recordHistoryEntry(containerId, {
+          recordHistoryEntry(historyKey, {
             timestamp: msg.createTime,
             message_id: msg.id,
             user_id: msg.sender,
@@ -466,14 +487,14 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
             text
           });
         }
-        console.log(`[feishu] Lazy-loaded ${msgs.length} messages for ${containerType} ${containerId}`);
+        console.log(`[feishu] Lazy-loaded ${msgs.length} messages for ${containerType} ${historyKey}`);
       }
-      return getInMemoryContext(containerId, currentMessageId);
+      return getInMemoryContext(historyKey, currentMessageId);
     }
   } catch (err) {
-    console.log(`[feishu] Lazy-load failed for ${containerType} ${containerId}: ${err.message}`);
+    console.log(`[feishu] Lazy-load failed for ${containerType} ${historyKey}: ${err.message}`);
   }
-  return getInMemoryContext(containerId, currentMessageId);
+  return getInMemoryContext(historyKey, currentMessageId);
 }
 
 // Resolve user_id to name (with TTL-based in-memory cache)
@@ -552,7 +573,7 @@ async function logMessage(chatType, chatId, userId, openId, text, messageId, tim
   // In-memory history for context (group chats and threads)
   // Thread messages go to thread history only (context isolation)
   if (threadId) {
-    recordHistoryEntry(threadId, logEntry);
+    recordHistoryEntry(getHistoryKey(chatId, threadId), logEntry);
   } else if (chatType === 'group') {
     recordHistoryEntry(chatId, logEntry);
   }
@@ -567,7 +588,9 @@ async function getGroupContext(chatId, currentMessageId) {
 
 function updateCursor(chatId, messageId) {
   groupCursors[chatId] = messageId;
-  saveCursors(groupCursors);
+  if (!saveCursors(groupCursors)) {
+    console.log(`[feishu] Failed to persist cursor for ${chatId}`);
+  }
 }
 
 // ============================================================
@@ -610,6 +633,7 @@ function isGroupAllowed(chatId) {
  * Check if a group is in "smart" mode (receives all messages without @mention).
  */
 function isSmartGroup(chatId) {
+  if ((config.groupPolicy || 'allowlist') === 'disabled') return false;
   const groupConfig = resolveGroupConfig(chatId);
   if (groupConfig) {
     return groupConfig.mode === 'smart' || groupConfig.requireMention === false;
@@ -629,8 +653,8 @@ function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) {
   }
   const allowed = groupConfig.allowFrom.map(s => String(s).toLowerCase());
   if (allowed.includes('*')) return true;
-  if (senderUserId && allowed.includes(senderUserId.toLowerCase())) return true;
-  if (senderOpenId && allowed.includes(senderOpenId.toLowerCase())) return true;
+  if (senderUserId && allowed.includes(String(senderUserId).toLowerCase())) return true;
+  if (senderOpenId && allowed.includes(String(senderOpenId).toLowerCase())) return true;
   return false;
 }
 
@@ -645,9 +669,10 @@ function getGroupHistoryLimit(chatId) {
 // Check if bot is mentioned
 function isBotMentioned(mentions, botId) {
   if (!mentions || !Array.isArray(mentions)) return false;
+  const normalizedBotId = String(botId || '');
   return mentions.some(m => {
     const mentionId = m.id?.open_id || m.id?.user_id || m.id?.app_id || '';
-    return mentionId === botId || m.key === '@_all';
+    return (mentionId && String(mentionId) === normalizedBotId) || m.key === '@_all';
   });
 }
 
@@ -692,10 +717,15 @@ function sendToC4(source, endpoint, content, onReject) {
     console.error('[feishu] sendToC4 called with empty content');
     return;
   }
-  const safeContent = content.replace(/'/g, "'\\''");
-  const cmd = `node "${C4_RECEIVE}" --channel "${source}" --endpoint "${endpoint}" --json --content '${safeContent}'`;
+  const args = [
+    C4_RECEIVE,
+    '--channel', source,
+    '--endpoint', endpoint,
+    '--json',
+    '--content', content
+  ];
 
-  exec(cmd, { encoding: 'utf8' }, (error, stdout) => {
+  execFile('node', args, { encoding: 'utf8', timeout: 35000 }, (error, stdout) => {
     if (!error) {
       console.log(`[feishu] Sent to C4: ${content.substring(0, 50)}...`);
       return;
@@ -708,7 +738,7 @@ function sendToC4(source, endpoint, content, onReject) {
     }
     console.warn(`[feishu] C4 send failed, retrying in 2s: ${error.message}`);
     setTimeout(() => {
-      exec(cmd, { encoding: 'utf8' }, (retryError, retryStdout) => {
+      execFile('node', args, { encoding: 'utf8', timeout: 35000 }, (retryError, retryStdout) => {
         if (!retryError) {
           console.log(`[feishu] Sent to C4 (retry): ${content.substring(0, 50)}...`);
           return;
@@ -789,14 +819,26 @@ async function fetchQuotedMessage(messageId) {
 /**
  * Format message for C4
  */
-function formatMessage(chatType, userName, text, contextMessages = [], mediaPath = null, { quotedContent, threadContext, threadRootId } = {}) {
+function escapeXml(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/'/g, '&apos;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatMessage(chatType, userName, text, contextMessages = [], mediaPath = null, { quotedContent, threadContext, threadRootId, smartHint = false } = {}) {
+  const safeUserName = escapeXml(userName);
+  const safeText = escapeXml(text);
   let prefix = chatType === 'p2p' ? '[Feishu DM]' : '[Feishu GROUP]';
-  let parts = [`${prefix} ${userName} said: `];
+  let parts = [`${prefix} ${safeUserName} said: `];
 
   if (threadContext && threadContext.length > 0) {
     const lines = [];
     for (const m of threadContext) {
-      const line = `[${m.user_name || m.user_id}]: ${m.text}`;
+      const line = `[${escapeXml(m.user_name || m.user_id)}]: ${escapeXml(m.text)}`;
       if (threadRootId && m.message_id === threadRootId) {
         lines.push(`<thread-root>\n${line}\n</thread-root>`);
       } else {
@@ -805,24 +847,35 @@ function formatMessage(chatType, userName, text, contextMessages = [], mediaPath
     }
     parts.push(`<thread-context>\n${lines.join('\n')}\n</thread-context>\n\n`);
   } else if (contextMessages.length > 0) {
-    const contextLines = contextMessages.map(m => `[${m.user_name || m.user_id}]: ${m.text}`).join('\n');
+    const contextLines = contextMessages.map(m => `[${escapeXml(m.user_name || m.user_id)}]: ${escapeXml(m.text)}`).join('\n');
     parts.push(`<group-context>\n${contextLines}\n</group-context>\n\n`);
   }
 
   // Include quoted message content if replying to a specific message
   // Skip for thread messages (threadContext present) — context is already provided
   if (quotedContent && !threadContext) {
-    const sender = quotedContent.sender || 'unknown';
-    const quoted = quotedContent.text || '';
+    const sender = escapeXml(quotedContent.sender || 'unknown');
+    const quoted = escapeXml(quotedContent.text || '');
     parts.push(`<replying-to>\n[${sender}]: ${quoted}\n</replying-to>\n\n`);
   }
 
-  parts.push(`<current-message>\n${text}\n</current-message>`);
+  if (smartHint) {
+    parts.push(`<smart-mode>
+Decide whether to respond. Do NOT reply if: the message is unrelated to you,
+just casual chat, or doesn't need your input. Only reply when:
+1) someone asks a question you can help with,
+2) discussing technical topics you know well,
+3) someone clearly needs assistance.
+When uncertain, prefer NOT to reply. Reply with exactly [SKIP] to stay silent.
+</smart-mode>\n\n`);
+  }
+
+  parts.push(`<current-message>\n${safeText}\n</current-message>`);
 
   let message = parts.join('');
 
   if (mediaPath) {
-    message += ` ---- file: ${mediaPath}`;
+    message += ` ---- file: ${escapeXml(mediaPath)}`;
   }
 
   return message;
@@ -919,7 +972,9 @@ async function bindOwner(userId, openId) {
     open_id: openId,
     name: userName
   };
-  saveConfig(config);
+  if (!saveConfig(config)) {
+    console.error('[feishu] Failed to persist owner binding');
+  }
   console.log(`[feishu] Owner bound: ${userName} (${userId})`);
   return userName;
 }
@@ -927,7 +982,10 @@ async function bindOwner(userId, openId) {
 // Check if user is owner
 function isOwner(userId, openId) {
   if (!config.owner?.bound) return false;
-  return config.owner.user_id === userId || config.owner.open_id === openId;
+  const ownerUserId = config.owner.user_id;
+  const ownerOpenId = config.owner.open_id;
+  return (ownerUserId !== undefined && ownerUserId !== null && userId !== undefined && userId !== null && String(ownerUserId) === String(userId))
+    || (ownerOpenId !== undefined && ownerOpenId !== null && openId !== undefined && openId !== null && String(ownerOpenId) === String(openId));
 }
 
 // Check whitelist (supports both user_id and open_id)
@@ -935,8 +993,23 @@ function isOwner(userId, openId) {
 function isWhitelisted(userId, openId) {
   if (isOwner(userId, openId)) return true;
   if (!config.whitelist?.enabled) return true;
-  const allowedUsers = [...(config.whitelist.private_users || []), ...(config.whitelist.group_users || [])];
-  return allowedUsers.includes(userId) || (openId && allowedUsers.includes(openId));
+  const allowedUsers = [...(config.whitelist.private_users || []), ...(config.whitelist.group_users || [])]
+    .map(v => String(v));
+  if (userId !== undefined && userId !== null && allowedUsers.includes(String(userId))) return true;
+  if (openId !== undefined && openId !== null && allowedUsers.includes(String(openId))) return true;
+  return false;
+}
+
+async function sendThreadAwareMessage(chatId, text, { threadId, rootId, parentId, messageId } = {}) {
+  const replyTarget = parentId || rootId || messageId;
+  if ((threadId || rootId) && replyTarget) {
+    try {
+      const replyResult = await replyToMessage(replyTarget, text);
+      if (replyResult.success) return true;
+    } catch {}
+  }
+  const result = await sendMessage(chatId, text);
+  return !!result?.success;
 }
 
 /**
@@ -980,8 +1053,6 @@ async function handleMessage(data) {
     logText = logText ? `${logText}\n${fileInfo}` : fileInfo;
   }
 
-  logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, data._timestamp || null, mentions, threadId);
-
   // Build structured endpoint with routing metadata
   const endpoint = buildEndpoint(chatId, { chatType, rootId, parentId, messageId, threadId });
 
@@ -1001,15 +1072,19 @@ async function handleMessage(data) {
       return;
     }
 
+    await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, data._timestamp || null, mentions, threadId);
+
     // Add typing indicator
     addTypingIndicator(messageId);
 
     // Fetch context: thread context for topic messages, quoted content for replies
     if (threadId) {
-      threadContext = await getContextWithFallback(threadId, messageId, 'thread');
+      const threadHistoryKey = getHistoryKey(chatId, threadId);
+      const threadHistoryLimit = config.message?.context_messages || DEFAULT_HISTORY_LIMIT;
+      threadContext = await getContextWithFallback(threadId, messageId, 'thread', threadHistoryKey, threadHistoryLimit);
       // Pin root message first in thread context
       if (threadContext && rootId) {
-        threadContext = pinRootMessage(threadContext, rootId, threadId);
+        threadContext = pinRootMessage(threadContext, rootId, threadHistoryKey);
       }
     } else if (parentId) {
       quotedContent = await fetchQuotedMessage(parentId);
@@ -1020,7 +1095,8 @@ async function handleMessage(data) {
     const threadRootId = threadId ? rootId : null;
     const rejectReply = (errMsg) => {
       removeTypingIndicator(messageId);
-      sendMessage(chatId, errMsg).catch(e => console.error('[feishu] reject reply failed:', e.message));
+      sendThreadAwareMessage(chatId, errMsg, { threadId, rootId, parentId, messageId })
+        .catch(e => console.error('[feishu] reject reply failed:', e.message));
     };
 
     // Handle images (lazy download: only when message is being sent to C4)
@@ -1068,6 +1144,13 @@ async function handleMessage(data) {
   if (chatType === 'group') {
     const mentioned = isBotMentioned(mentions, botOpenId);
     const smart = isSmartGroup(chatId);
+    const smartNoMention = smart && !mentioned;
+    const groupPolicy = config.groupPolicy || 'allowlist';
+
+    if (groupPolicy === 'disabled') {
+      console.log(`[feishu] Group policy disabled, ignoring group ${chatId}`);
+      return;
+    }
 
     // Check group policy
     if (!isGroupAllowed(chatId)) {
@@ -1076,12 +1159,6 @@ async function handleMessage(data) {
         console.log(`[feishu] Group ${chatId} not allowed by policy, ignoring`);
         return;
       }
-    }
-
-    // In non-smart groups, require @mention
-    if (!smart && !mentioned) {
-      console.log(`[feishu] Group message without @mention, logged only`);
-      return;
     }
 
     // Check per-group sender allowlist
@@ -1102,20 +1179,32 @@ async function handleMessage(data) {
       }
     }
 
+    await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, data._timestamp || null, mentions, threadId);
+
+    // In non-smart groups, require @mention
+    if (!smart && !mentioned) {
+      console.log(`[feishu] Group message without @mention, logged only`);
+      return;
+    }
+
     console.log(`[feishu] ${smart ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
     await preloadGroupMembers(chatId);
     const contextMessages = await getGroupContext(chatId, messageId);
     updateCursor(chatId, messageId);
 
-    // Add typing indicator before processing
-    addTypingIndicator(messageId);
+    // Smart mode without @mention may skip reply entirely ([SKIP]), so do not show typing.
+    if (!smartNoMention) {
+      addTypingIndicator(messageId);
+    }
 
     // Fetch context: thread context for topic messages, quoted content for replies
     if (threadId) {
-      threadContext = await getContextWithFallback(threadId, messageId, 'thread');
+      const threadHistoryKey = getHistoryKey(chatId, threadId);
+      const threadHistoryLimit = getGroupHistoryLimit(chatId);
+      threadContext = await getContextWithFallback(threadId, messageId, 'thread', threadHistoryKey, threadHistoryLimit);
       // Pin root message first in thread context
       if (threadContext && rootId) {
-        threadContext = pinRootMessage(threadContext, rootId, threadId);
+        threadContext = pinRootMessage(threadContext, rootId, threadHistoryKey);
       }
     } else if (parentId) {
       quotedContent = await fetchQuotedMessage(parentId);
@@ -1123,14 +1212,22 @@ async function handleMessage(data) {
 
     const senderName = await resolveUserName(senderUserId);
     const cleanText = resolveMentions(text, mentions);
+    const cleanLogText = resolveMentions(logText, mentions);
     const threadRootId = threadId ? rootId : null;
     const groupRejectReply = (errMsg) => {
       removeTypingIndicator(messageId);
-      sendMessage(chatId, errMsg).catch(e => console.error('[feishu] reject reply failed:', e.message));
+      sendThreadAwareMessage(chatId, errMsg, { threadId, rootId, parentId, messageId })
+        .catch(e => console.error('[feishu] reject reply failed:', e.message));
     };
 
     // Handle images (lazy download: only for messages being sent to C4)
     if (imageKeys.length > 0) {
+      if (smartNoMention) {
+        const msg = formatMessage('group', senderName, cleanLogText || '[image]', contextMessages, null, { quotedContent, threadContext, threadRootId, smartHint: true });
+        sendToC4('feishu', endpoint, msg, groupRejectReply);
+        return;
+      }
+
       const mediaPaths = [];
       for (const imgKey of imageKeys) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1146,11 +1243,19 @@ async function handleMessage(data) {
         sendToC4('feishu', endpoint, msg, groupRejectReply);
       } else {
         removeTypingIndicator(messageId);
+        sendThreadAwareMessage(chatId, 'Image download failed. Please resend the image.', { threadId, rootId, parentId, messageId })
+          .catch(e => console.error('[feishu] image error reply failed:', e.message));
       }
       return;
     }
 
     if (fileKey) {
+      if (smartNoMention) {
+        const msg = formatMessage('group', senderName, cleanLogText || `[file: ${fileName}]`, contextMessages, null, { quotedContent, threadContext, threadRootId, smartHint: true });
+        sendToC4('feishu', endpoint, msg, groupRejectReply);
+        return;
+      }
+
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const localPath = path.join(MEDIA_DIR, `feishu-group-${timestamp}-${fileName}`);
       const result = await downloadFile(messageId, fileKey, localPath);
@@ -1159,11 +1264,13 @@ async function handleMessage(data) {
         sendToC4('feishu', endpoint, msg, groupRejectReply);
       } else {
         removeTypingIndicator(messageId);
+        sendThreadAwareMessage(chatId, 'File download failed. Please resend the file.', { threadId, rootId, parentId, messageId })
+          .catch(e => console.error('[feishu] file error reply failed:', e.message));
       }
       return;
     }
 
-    const msg = formatMessage('group', senderName, cleanText || text, contextMessages, null, { quotedContent, threadContext, threadRootId });
+    const msg = formatMessage('group', senderName, cleanText || text, contextMessages, null, { quotedContent, threadContext, threadRootId, smartHint: smartNoMention });
     sendToC4('feishu', endpoint, msg, groupRejectReply);
   }
 }
@@ -1288,16 +1395,37 @@ function startWebhook(creds) {
     };
     // Thread messages go to thread only (context isolation)
     if (threadId) {
-      recordHistoryEntry(threadId, entry);
+      recordHistoryEntry(getHistoryKey(chatId, threadId), entry);
     } else if (chatId) {
       recordHistoryEntry(chatId, entry);
     }
     res.json({ ok: true });
   });
 
-  app.listen(PORT, () => {
-    console.log(`[feishu] Webhook server running on port ${PORT}`);
-  });
+  const maxRetries = 5;
+  const retryDelayMs = 1000;
+  let attempt = 0;
+
+  const listenWithRetry = () => {
+    const server = app.listen(PORT, () => {
+      webhookServer = server;
+      console.log(`[feishu] Webhook server running on port ${PORT}`);
+    });
+
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE' && attempt < maxRetries) {
+        attempt += 1;
+        console.warn(`[feishu] Port ${PORT} in use, retrying (${attempt}/${maxRetries})...`);
+        try { server.close(); } catch {}
+        setTimeout(listenWithRetry, retryDelayMs);
+        return;
+      }
+      console.error(`[feishu] Webhook server failed: ${err.message}`);
+      process.exit(1);
+    });
+  };
+
+  listenWithRetry();
 }
 
 // ============================================================
@@ -1306,11 +1434,37 @@ function startWebhook(creds) {
 
 // Graceful shutdown
 function shutdown() {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
   console.log(`[feishu] Shutting down...`);
+
+  clearInterval(dedupCleanupInterval);
+  clearInterval(typingCheckInterval);
+  clearInterval(userCachePersistInterval);
+
+  stopWatching();
+  persistUserCache();
+
+  for (const [messageId, state] of activeTypingIndicators.entries()) {
+    clearTimeout(state.timer);
+    if (state.reactionId) {
+      removeReaction(messageId, state.reactionId).catch(() => {});
+    }
+    activeTypingIndicators.delete(messageId);
+  }
+
   if (wsClient) {
     wsClient.close({ force: false });
   }
-  process.exit(0);
+
+  const finalizeExit = () => process.exit(0);
+  if (webhookServer) {
+    webhookServer.close(() => finalizeExit());
+    setTimeout(finalizeExit, 1000).unref();
+  } else {
+    finalizeExit();
+  }
 }
 
 process.on('SIGINT', shutdown);

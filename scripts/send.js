@@ -83,7 +83,10 @@ function splitMessage(text, maxLength) {
 
   while (remaining.length > 0) {
     if (remaining.length <= maxLength) {
-      chunks.push(remaining);
+      const finalChunk = remaining.trim();
+      if (finalChunk.length > 0) {
+        chunks.push(finalChunk);
+      }
       break;
     }
 
@@ -136,7 +139,10 @@ function splitMessage(text, maxLength) {
       }
     }
 
-    chunks.push(remaining.substring(0, breakAt).trim());
+    const nextChunk = remaining.substring(0, breakAt).trim();
+    if (nextChunk.length > 0) {
+      chunks.push(nextChunk);
+    }
     remaining = remaining.substring(breakAt).trim();
   }
 
@@ -279,11 +285,14 @@ async function recordOutgoing(text) {
     return;
   }
   const port = config.webhook_port || 3458;
+  const safeText = String(text || '').slice(0, 4000);
   const body = JSON.stringify({
     chatId: parsedEndpoint.chatId,
     threadId: parsedEndpoint.thread || null,
-    text
+    text: safeText
   });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
   try {
     await fetch(`http://127.0.0.1:${port}/internal/record-outgoing`, {
       method: 'POST',
@@ -291,16 +300,26 @@ async function recordOutgoing(text) {
         'Content-Type': 'application/json',
         'X-Internal-Token': appId,
       },
-      body
+      body,
+      signal: controller.signal
     });
   } catch { /* non-critical */ }
+  finally {
+    clearTimeout(timer);
+  }
 }
 
 async function send() {
   try {
+    if (message.trim() === '[SKIP]') {
+      markTypingDone(parsedEndpoint.msg);
+      process.exit(0);
+    }
+
     if (mediaMatch) {
       const [, mediaType, mediaPath] = mediaMatch;
       await sendMedia(mediaType, mediaPath);
+      await recordOutgoing(mediaType === 'image' ? '[sent image]' : '[sent file]');
     } else {
       await sendText(endpointId, message);
       await recordOutgoing(message);

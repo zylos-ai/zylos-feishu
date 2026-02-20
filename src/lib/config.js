@@ -100,12 +100,16 @@ export function getConfig() {
  * Save configuration to file
  */
 export function saveConfig(newConfig) {
+  const tmpPath = CONFIG_PATH + '.tmp';
   try {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(newConfig, null, 2));
+    fs.writeFileSync(tmpPath, JSON.stringify(newConfig, null, 2));
+    fs.renameSync(tmpPath, CONFIG_PATH);
     config = newConfig;
+    return true;
   } catch (err) {
     console.error(`[feishu] Failed to save config: ${err.message}`);
-    throw err;
+    try { fs.unlinkSync(tmpPath); } catch {}
+    return false;
   }
 }
 
@@ -126,6 +130,11 @@ export function watchConfig(onChange) {
           onChange(config);
         }
       }
+    });
+    configWatcher.on('error', (err) => {
+      console.warn(`[feishu] Config watcher error: ${err.message}`);
+      try { configWatcher.close(); } catch {}
+      configWatcher = null;
     });
   }
 }
