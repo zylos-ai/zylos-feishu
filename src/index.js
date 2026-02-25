@@ -1032,7 +1032,7 @@ function isDmAllowed(userId, openId) {
   if (policy === 'open') return true;
   if (policy === 'owner') return false;
   // policy === 'allowlist'
-  const allowFrom = (config.dmAllowFrom || []).map(String);
+  const allowFrom = (Array.isArray(config.dmAllowFrom) ? config.dmAllowFrom : []).map(String);
   // Backward compat: also check legacy whitelist.private_users and group_users
   for (const legacyList of [config.whitelist?.private_users, config.whitelist?.group_users]) {
     if (legacyList?.length) {
