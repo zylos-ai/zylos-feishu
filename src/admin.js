@@ -424,27 +424,24 @@ function migrateGroupConfig(config) {
     migrated = true;
   }
 
-  // Migrate legacy whitelist to dmPolicy/dmAllowFrom
-  // Only trigger when whitelist has actual data (users or enabled=true),
-  // not for default whitelist objects injected by loadConfig()'s DEFAULT_CONFIG merge
-  if (config.whitelist && !config.dmPolicy) {
-    const wl = config.whitelist;
-    const legacyUsers = [...(wl.private_users || []), ...(wl.group_users || [])];
-    const hasEntries = legacyUsers.length > 0;
-    const wlEnabled = wl.private_enabled ?? wl.enabled ?? false;
-    if (hasEntries || wlEnabled) {
-      config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
-      if (hasEntries) {
-        config.dmAllowFrom = [...(config.dmAllowFrom || [])];
-        for (const u of legacyUsers) {
-          if (!config.dmAllowFrom.includes(u)) config.dmAllowFrom.push(u);
-        }
+  // Migrate legacy whitelist → cleanup and merge users into dmAllowFrom
+  // Note: dmPolicy is already correctly set by loadConfig()'s runtime migration;
+  // this migration only handles user data transfer and legacy field cleanup
+  if (config.whitelist) {
+    const legacyUsers = [
+      ...(config.whitelist.private_users || []),
+      ...(config.whitelist.group_users || [])
+    ];
+    if (legacyUsers.length) {
+      config.dmAllowFrom = [...(config.dmAllowFrom || [])];
+      for (const u of legacyUsers) {
+        if (!config.dmAllowFrom.includes(u)) config.dmAllowFrom.push(u);
       }
-      migrations.push(`Migrated whitelist.enabled=${wlEnabled} → dmPolicy=${config.dmPolicy}, ${(config.dmAllowFrom || []).length} users in dmAllowFrom`);
-      config._legacy_whitelist = config.whitelist;
-      delete config.whitelist;
-      migrated = true;
     }
+    migrations.push(`Migrated whitelist: ${(config.dmAllowFrom || []).length} users in dmAllowFrom, dmPolicy=${config.dmPolicy}`);
+    config._legacy_whitelist = config.whitelist;
+    delete config.whitelist;
+    migrated = true;
   }
 
   return { migrated, migrations };

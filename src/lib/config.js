@@ -30,12 +30,10 @@ export const DEFAULT_CONFIG = {
     open_id: '',
     name: ''
   },
-  // Whitelist settings (disabled by default)
-  whitelist: {
-    enabled: false,
-    private_users: [],
-    group_users: []
-  },
+  // DM policy: 'open' (anyone can DM), 'allowlist' (only dmAllowFrom), 'owner' (owner only)
+  dmPolicy: 'owner',
+  // DM allowlist — user_id or open_id values (used when dmPolicy = 'allowlist')
+  dmAllowFrom: [],
   // Group policy: 'open' (all groups), 'allowlist' (only configured groups), 'disabled' (no groups)
   groupPolicy: 'allowlist',
   // Per-group configuration map
