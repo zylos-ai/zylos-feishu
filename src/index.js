@@ -1235,7 +1235,7 @@ async function handleMessage(data) {
     if (!allowedGroup && !(senderIsOwner && mentioned)) {
       if (mentioned) {
         console.log(`[feishu] Group ${chatId} not allowed by policy, rejecting`);
-        sendMessage(chatId, "Sorry, I'm not available in this group.").catch(() => {});
+        replyToMessage(messageId, "Sorry, I'm not available in this group.").catch(() => {});
       } else {
         console.log(`[feishu] Group ${chatId} not allowed by policy, ignoring`);
       }
@@ -1245,7 +1245,7 @@ async function handleMessage(data) {
     if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) && !senderIsOwner) {
       if (mentioned) {
         console.log(`[feishu] Sender ${senderUserId} not in group ${chatId} allowFrom, rejecting`);
-        sendMessage(chatId, "Sorry, you don't have permission to interact with me in this group.").catch(() => {});
+        replyToMessage(messageId, "Sorry, you don't have permission to interact with me in this group.").catch(() => {});
       } else {
         console.log(`[feishu] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
       }
