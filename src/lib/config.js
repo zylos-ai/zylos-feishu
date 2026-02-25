@@ -53,8 +53,8 @@ export const DEFAULT_CONFIG = {
   // Message settings
   message: {
     context_messages: 10,
-    // Send messages as interactive cards with markdown rendering (default: off)
-    useMarkdownCard: false
+    // Send messages as interactive cards with markdown rendering (default: on)
+    useMarkdownCard: true
   }
 };
 
