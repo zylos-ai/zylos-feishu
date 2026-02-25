@@ -74,27 +74,32 @@ export function loadConfig() {
       if (config.group_whitelist !== undefined && !('groupPolicy' in parsed)) {
         config.groupPolicy = config.group_whitelist?.enabled !== false ? 'allowlist' : 'open';
       }
-      // Runtime backward-compat: derive dmPolicy from legacy whitelist
-      // Only triggers for configs with whitelist in file but no dmPolicy yet
-      if ('whitelist' in parsed && !('dmPolicy' in parsed)) {
-        const wl = parsed.whitelist || {};
-        const legacyUsers = [
-          ...(config.whitelist?.private_users || []),
-          ...(config.whitelist?.group_users || [])
-        ];
-        const hasEntries = legacyUsers.length > 0;
-        const wlEnabled = wl.private_enabled ?? wl.enabled;
-        if (wlEnabled === false) {
-          // Explicitly disabled whitelist → open access
-          config.dmPolicy = 'open';
-        } else if (hasEntries || wlEnabled === true) {
-          // Has entries or explicitly enabled → allowlist
-          config.dmPolicy = 'allowlist';
-          if (!('dmAllowFrom' in parsed) && hasEntries) {
-            config.dmAllowFrom = legacyUsers;
+      // Runtime backward-compat: derive dmPolicy for configs without explicit dmPolicy
+      if (!('dmPolicy' in parsed)) {
+        if ('whitelist' in parsed) {
+          // Has legacy whitelist → derive from it
+          const wl = parsed.whitelist || {};
+          const legacyUsers = [
+            ...(config.whitelist?.private_users || []),
+            ...(config.whitelist?.group_users || [])
+          ];
+          const hasEntries = legacyUsers.length > 0;
+          const wlEnabled = wl.private_enabled ?? wl.enabled;
+          if (wlEnabled === false) {
+            // Explicitly disabled whitelist → open access
+            config.dmPolicy = 'open';
+          } else if (hasEntries || wlEnabled === true) {
+            // Has entries or explicitly enabled → allowlist
+            config.dmPolicy = 'allowlist';
+            if (!('dmAllowFrom' in parsed) && hasEntries) {
+              config.dmAllowFrom = legacyUsers;
+            }
           }
+          // else: no entries, no explicit enabled flag → leave as default 'owner'
+        } else {
+          // Pre-whitelist era config → no DM restrictions existed, default to open
+          config.dmPolicy = 'open';
         }
-        // else: no entries, no explicit enabled flag → leave unset (defaults to 'owner')
       }
     } else {
       console.warn(`[feishu] Config file not found: ${CONFIG_PATH}`);
