@@ -78,18 +78,25 @@ export function loadConfig() {
       }
       // Runtime backward-compat: derive dmPolicy from legacy whitelist
       // Only triggers for configs with whitelist in file but no dmPolicy yet
-      // Guard: only migrate when whitelist has actual data, not default objects
       if ('whitelist' in parsed && !('dmPolicy' in parsed)) {
-        const wl = config.whitelist || {};
-        const legacyUsers = [...(wl.private_users || []), ...(wl.group_users || [])];
+        const wl = parsed.whitelist || {};
+        const legacyUsers = [
+          ...(config.whitelist?.private_users || []),
+          ...(config.whitelist?.group_users || [])
+        ];
         const hasEntries = legacyUsers.length > 0;
-        const wlEnabled = wl.private_enabled ?? wl.enabled ?? false;
-        if (hasEntries || wlEnabled) {
-          config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
+        const wlEnabled = wl.private_enabled ?? wl.enabled;
+        if (wlEnabled === false) {
+          // Explicitly disabled whitelist → open access
+          config.dmPolicy = 'open';
+        } else if (hasEntries || wlEnabled === true) {
+          // Has entries or explicitly enabled → allowlist
+          config.dmPolicy = 'allowlist';
           if (!('dmAllowFrom' in parsed) && hasEntries) {
             config.dmAllowFrom = legacyUsers;
           }
         }
+        // else: no entries, no explicit enabled flag → leave unset (defaults to 'owner')
       }
     } else {
       console.warn(`[feishu] Config file not found: ${CONFIG_PATH}`);
