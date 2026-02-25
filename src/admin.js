@@ -15,19 +15,13 @@ function getGroupsMap(config) {
   return config.groups || {};
 }
 
-function persistConfig(config) {
-  if (!saveConfig(config)) {
-    console.error('Failed to save config');
-    process.exit(1);
-  }
-}
-
 // Global group policies (smart/mention are per-group modes, not global policies)
-const ALLOWED_GROUP_POLICIES = ['disabled', 'allowlist', 'open'];
+const VALID_GROUP_POLICIES = new Set(['disabled', 'allowlist', 'open']);
 
-function parseGroupId(chatId) {
-  const value = String(chatId || '').trim();
-  return value.length > 0 ? value : null;
+function saveConfigOrExit(config) {
+  if (saveConfig(config)) return true;
+  console.error('Failed to save config');
+  process.exit(1);
 }
 
 // Commands
@@ -103,7 +97,7 @@ const commands = {
         added_at: new Date().toISOString()
       };
     }
-    persistConfig(config);
+    saveConfigOrExit(config);
     console.log(`Added group: ${chatId} (${name}) [${mode}]`);
     console.log('Run: pm2 restart zylos-feishu');
   },
@@ -150,7 +144,7 @@ const commands = {
       return;
     }
 
-    persistConfig(config);
+    saveConfigOrExit(config);
     console.log('Run: pm2 restart zylos-feishu');
   },
 
@@ -159,56 +153,70 @@ const commands = {
   'remove-smart-group': (chatId) => commands['remove-group'](chatId),
 
   'set-group-policy': (policy) => {
-    if (!ALLOWED_GROUP_POLICIES.includes(policy)) {
-      console.error(`Usage: admin.js set-group-policy <${ALLOWED_GROUP_POLICIES.join('|')}>`);
+    const normalizedPolicy = String(policy || '').trim().toLowerCase();
+    if (!VALID_GROUP_POLICIES.has(normalizedPolicy)) {
+      console.error(`Invalid policy "${policy || ''}". Valid values: disabled, allowlist, open.`);
+      console.error('Usage: admin.js set-group-policy <disabled|allowlist|open>');
       process.exit(1);
     }
     const config = loadConfig();
-    config.groupPolicy = policy;
-    persistConfig(config);
-    console.log(`Group policy set to: ${policy}`);
+    config.groupPolicy = normalizedPolicy;
+    saveConfigOrExit(config);
+    console.log(`Group policy set to: ${normalizedPolicy}`);
     console.log('Run: pm2 restart zylos-feishu');
   },
 
   'set-group-allowfrom': (chatId, ...userIds) => {
-    const safeChatId = parseGroupId(chatId);
-    const safeUserIds = userIds.map(id => String(id || '').trim()).filter(Boolean);
-    if (!safeChatId || safeUserIds.length === 0) {
+    const normalizedChatId = String(chatId || '').trim();
+    if (!normalizedChatId || userIds.length === 0) {
       console.error('Usage: admin.js set-group-allowfrom <chat_id> <user_id1> [user_id2] ...');
       process.exit(1);
     }
     const config = loadConfig();
-    if (!config.groups?.[safeChatId]) {
-      console.error(`Group ${safeChatId} not configured. Add it first with add-group.`);
+    if (!config.groups?.[normalizedChatId]) {
+      console.error(`Group ${normalizedChatId} not configured. Add it first with add-group.`);
       process.exit(1);
     }
-    config.groups[safeChatId].allowFrom = safeUserIds;
-    persistConfig(config);
-    console.log(`Set allowFrom for ${safeChatId}: [${safeUserIds.join(', ')}]`);
+    const normalizedUserIds = [...new Set(userIds.map(id => String(id).trim()).filter(Boolean))];
+    if (normalizedUserIds.length === 0) {
+      console.error('Invalid allowFrom value. Provide at least one non-empty user ID or "*".');
+      process.exit(1);
+    }
+    const invalidIds = normalizedUserIds.filter(id => /\s/.test(id));
+    if (invalidIds.length > 0) {
+      console.error(`Invalid user IDs (no whitespace allowed): ${invalidIds.join(', ')}`);
+      process.exit(1);
+    }
+    config.groups[normalizedChatId].allowFrom = normalizedUserIds;
+    saveConfigOrExit(config);
+    console.log(`Set allowFrom for ${normalizedChatId}: [${normalizedUserIds.join(', ')}]`);
     console.log('Run: pm2 restart zylos-feishu');
   },
 
   'set-group-history-limit': (chatId, limit) => {
-    const safeChatId = parseGroupId(chatId);
-    const limitText = String(limit || '').trim();
-    if (!safeChatId || !/^\d+$/.test(limitText)) {
+    const normalizedChatId = String(chatId || '').trim();
+    if (!normalizedChatId || limit === undefined) {
       console.error('Usage: admin.js set-group-history-limit <chat_id> <limit>');
-      console.error('Limit must be an integer between 1 and 200.');
+      process.exit(1);
+    }
+    const limitText = String(limit).trim();
+    if (!/^\d+$/.test(limitText)) {
+      console.error(`Invalid history limit "${limit}". Must be an integer between 1 and 200.`);
       process.exit(1);
     }
     const parsedLimit = parseInt(limitText, 10);
-    if (parsedLimit < 1 || parsedLimit > 200) {
+    if (Number.isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 200) {
       console.error(`Invalid history limit "${limit}". Must be between 1 and 200.`);
       process.exit(1);
     }
     const config = loadConfig();
-    if (!config.groups?.[safeChatId]) {
-      console.error(`Group ${safeChatId} not configured. Add it first with add-group.`);
+    if (!config.groups?.[normalizedChatId]) {
+      console.error(`Group ${normalizedChatId} not configured. Add it first with add-group.`);
       process.exit(1);
     }
-    config.groups[safeChatId].historyLimit = parsedLimit;
-    persistConfig(config);
-    console.log(`Set historyLimit for ${safeChatId}: ${parsedLimit}`);
+    config.groups[normalizedChatId].historyLimit = parsedLimit;
+    saveConfigOrExit(config);
+    console.log(`Set historyLimit for ${normalizedChatId}: ${parsedLimit}`);
     console.log('Run: pm2 restart zylos-feishu');
   },
 
@@ -220,7 +228,7 @@ const commands = {
     }
     const config = loadConfig();
     config.dmPolicy = policy;
-    persistConfig(config);
+    saveConfigOrExit(config);
     const desc = { open: 'Anyone can DM', allowlist: 'Only dmAllowFrom users can DM', owner: 'Only owner can DM' };
     console.log(`DM policy set to: ${policy} (${desc[policy]})`);
     console.log('Run: pm2 restart zylos-feishu');
@@ -246,7 +254,7 @@ const commands = {
     if (!config.dmAllowFrom.includes(userId)) {
       config.dmAllowFrom.push(userId);
     }
-    persistConfig(config);
+    saveConfigOrExit(config);
     console.log(`Added ${userId} to dmAllowFrom`);
     if ((config.dmPolicy || 'owner') !== 'allowlist') {
       console.log(`Note: dmPolicy is "${config.dmPolicy || 'owner'}", set to "allowlist" for this to take effect.`);
@@ -267,7 +275,7 @@ const commands = {
     const idx = config.dmAllowFrom.indexOf(userId);
     if (idx !== -1) {
       config.dmAllowFrom.splice(idx, 1);
-      persistConfig(config);
+      saveConfigOrExit(config);
       console.log(`Removed ${userId} from dmAllowFrom`);
     } else {
       console.log(`${userId} not found in dmAllowFrom`);
@@ -301,7 +309,7 @@ const commands = {
     const config = loadConfig();
     const result = migrateGroupConfig(config);
     if (result.migrated) {
-      persistConfig(config);
+      saveConfigOrExit(config);
       console.log('Group config migrated:');
       result.migrations.forEach(m => console.log('  - ' + m));
     } else {

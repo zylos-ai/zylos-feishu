@@ -37,7 +37,7 @@ if (fs.existsSync(configPath)) {
 
     // Migration 2: Ensure webhook_port
     if (config.webhook_port === undefined) {
-      config.webhook_port = 3457;
+      config.webhook_port = 3458;
       migrated = true;
       migrations.push('Added webhook_port');
     }

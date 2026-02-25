@@ -631,18 +631,19 @@ function resolveGroupConfig(chatId) {
  * Also handles backward compat with legacy allowed_groups/smart_groups.
  */
 function isGroupAllowed(chatId) {
+  const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
   const groupPolicy = config.groupPolicy || 'allowlist';
 
   if (groupPolicy === 'disabled') return false;
   if (groupPolicy === 'open') return true;
 
   // allowlist mode: check groups map
-  const groupConfig = resolveGroupConfig(chatId);
+  const groupConfig = resolveGroupConfig(normalizedChatId);
   if (groupConfig) return true;
 
   // Backward compat: check legacy arrays if groups map doesn't have this chat
-  const legacyAllowed = (config.allowed_groups || []).some(g => g.chat_id === chatId);
-  const legacySmart = (config.smart_groups || []).some(g => g.chat_id === chatId);
+  const legacyAllowed = (config.allowed_groups || []).some(g => String(g.chat_id) === normalizedChatId);
+  const legacySmart = (config.smart_groups || []).some(g => String(g.chat_id) === normalizedChatId);
   if (legacyAllowed || legacySmart) return true;
 
   return false;
@@ -652,13 +653,14 @@ function isGroupAllowed(chatId) {
  * Check if a group is in "smart" mode (receives all messages without @mention).
  */
 function isSmartGroup(chatId) {
+  const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
   if ((config.groupPolicy || 'allowlist') === 'disabled') return false;
-  const groupConfig = resolveGroupConfig(chatId);
+  const groupConfig = resolveGroupConfig(normalizedChatId);
   if (groupConfig) {
     return groupConfig.mode === 'smart' || groupConfig.requireMention === false;
   }
   // Legacy fallback
-  return (config.smart_groups || []).some(g => g.chat_id === chatId);
+  return (config.smart_groups || []).some(g => String(g.chat_id) === normalizedChatId);
 }
 
 /**
@@ -671,9 +673,11 @@ function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) {
     return true; // No per-group sender restriction
   }
   const allowed = groupConfig.allowFrom.map(s => String(s).toLowerCase());
+  const normalizedSenderUserId = senderUserId === undefined || senderUserId === null ? '' : String(senderUserId).toLowerCase();
+  const normalizedSenderOpenId = senderOpenId === undefined || senderOpenId === null ? '' : String(senderOpenId).toLowerCase();
   if (allowed.includes('*')) return true;
-  if (senderUserId && allowed.includes(String(senderUserId).toLowerCase())) return true;
-  if (senderOpenId && allowed.includes(String(senderOpenId).toLowerCase())) return true;
+  if (normalizedSenderUserId && allowed.includes(normalizedSenderUserId)) return true;
+  if (normalizedSenderOpenId && allowed.includes(normalizedSenderOpenId)) return true;
   return false;
 }
 
@@ -685,13 +689,26 @@ function getGroupHistoryLimit(chatId) {
   return groupConfig?.historyLimit || config.message?.context_messages || DEFAULT_HISTORY_LIMIT;
 }
 
+/**
+ * Get display name for a group.
+ */
+function getGroupName(chatId) {
+  const groupConfig = resolveGroupConfig(chatId);
+  if (groupConfig?.name) return groupConfig.name;
+  const legacyAllowed = (config.allowed_groups || []).find(g => String(g.chat_id) === String(chatId));
+  if (legacyAllowed?.name) return legacyAllowed.name;
+  const legacySmart = (config.smart_groups || []).find(g => String(g.chat_id) === String(chatId));
+  if (legacySmart?.name) return legacySmart.name;
+  return String(chatId || 'unknown');
+}
+
 // Check if bot is mentioned
 function isBotMentioned(mentions, botId) {
   if (!mentions || !Array.isArray(mentions)) return false;
-  const normalizedBotId = String(botId || '');
+  const normalizedBotId = botId === undefined || botId === null ? '' : String(botId);
   return mentions.some(m => {
     const mentionId = m.id?.open_id || m.id?.user_id || m.id?.app_id || '';
-    return (mentionId && String(mentionId) === normalizedBotId) || m.key === '@_all';
+    return (normalizedBotId && String(mentionId) === normalizedBotId) || m.key === '@_all';
   });
 }
 
@@ -849,10 +866,19 @@ function escapeXml(value) {
     .replace(/"/g, '&quot;');
 }
 
-function formatMessage(chatType, userName, text, contextMessages = [], mediaPath = null, { quotedContent, threadContext, threadRootId, smartHint = false } = {}) {
+function formatMessage(
+  chatType,
+  userName,
+  text,
+  contextMessages = [],
+  mediaPath = null,
+  { quotedContent, threadContext, threadRootId, groupName, smartHint } = {}
+) {
+  const prefix = chatType === 'p2p'
+    ? '[Feishu DM]'
+    : `[Feishu GROUP:${escapeXml(groupName || 'unknown')}]`;
   const safeUserName = escapeXml(userName);
   const safeText = escapeXml(text);
-  let prefix = chatType === 'p2p' ? '[Feishu DM]' : '[Feishu GROUP]';
   let parts = [`${prefix} ${safeUserName} said: `];
 
   if (threadContext && threadContext.length > 0) {
@@ -1203,43 +1229,38 @@ async function handleMessage(data) {
   // Group chat handling
   if (chatType === 'group') {
     const mentioned = isBotMentioned(mentions, botOpenId);
+    const senderIsOwner = isOwner(senderUserId, senderOpenId);
+    const groupPolicy = config.groupPolicy || 'allowlist';
+    if (groupPolicy === 'disabled') {
+      console.log(`[feishu] Group policy disabled, ignoring group message from ${senderUserId}`);
+      return;
+    }
+    const allowedGroup = isGroupAllowed(chatId);
     const smart = isSmartGroup(chatId);
     const smartNoMention = smart && !mentioned;
-    const groupPolicy = config.groupPolicy || 'allowlist';
 
-    if (groupPolicy === 'disabled') {
-      console.log(`[feishu] Group policy disabled, ignoring group ${chatId}`);
+    if (!allowedGroup && !(senderIsOwner && mentioned)) {
+      console.log(`[feishu] Group ${chatId} not allowed by policy, ignoring`);
       return;
     }
 
-    // Check group policy
-    if (!isGroupAllowed(chatId)) {
-      const senderIsOwner = isOwner(senderUserId, senderOpenId);
-      if (!senderIsOwner) {
-        console.log(`[feishu] Group ${chatId} not allowed by policy, ignoring`);
-        return;
-      }
+    if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) && !senderIsOwner) {
+      console.log(`[feishu] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
+      return;
     }
 
-    // Check per-group sender allowlist
-    if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId)) {
-      const senderIsOwner = isOwner(senderUserId, senderOpenId);
-      if (!senderIsOwner) {
-        console.log(`[feishu] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
-        return;
+    if (!smart && !mentioned) {
+      if (allowedGroup) {
+        await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, data._timestamp || null, mentions, threadId);
       }
+      console.log(`[feishu] Group message without @mention, logged only`);
+      return;
     }
 
     // Group user access is controlled by groupPolicy + groups config + per-group allowFrom.
     // No separate user-level whitelist for groups (dmPolicy/dmAllowFrom only applies to DMs).
 
     await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, data._timestamp || null, mentions, threadId);
-
-    // In non-smart groups, require @mention
-    if (!smart && !mentioned) {
-      console.log(`[feishu] Group message without @mention, logged only`);
-      return;
-    }
 
     console.log(`[feishu] ${smart ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
     await preloadGroupMembers(chatId);
@@ -1277,7 +1298,7 @@ async function handleMessage(data) {
     // Handle images (lazy download: only for messages being sent to C4)
     if (imageKeys.length > 0) {
       if (smartNoMention) {
-        const msg = formatMessage('group', senderName, cleanLogText || '[image]', contextMessages, null, { quotedContent, threadContext, threadRootId, smartHint: true });
+        const msg = formatMessage('group', senderName, cleanLogText || '[image]', contextMessages, null, { quotedContent, threadContext, threadRootId, groupName: getGroupName(chatId), smartHint: true });
         sendToC4('feishu', endpoint, msg, groupRejectReply);
         return;
       }
@@ -1293,7 +1314,7 @@ async function handleMessage(data) {
       }
       if (mediaPaths.length > 0) {
         const mediaLabel = mediaPaths.length === 1 ? '[image]' : `[${mediaPaths.length} images]`;
-        const msg = formatMessage('group', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, contextMessages, mediaPaths[0], { quotedContent, threadContext, threadRootId });
+        const msg = formatMessage('group', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, contextMessages, mediaPaths[0], { quotedContent, threadContext, threadRootId, groupName: getGroupName(chatId) });
         sendToC4('feishu', endpoint, msg, groupRejectReply);
       } else {
         removeTypingIndicator(messageId);
@@ -1305,7 +1326,7 @@ async function handleMessage(data) {
 
     if (fileKey) {
       if (smartNoMention) {
-        const msg = formatMessage('group', senderName, cleanLogText || `[file: ${fileName}]`, contextMessages, null, { quotedContent, threadContext, threadRootId, smartHint: true });
+        const msg = formatMessage('group', senderName, cleanLogText || `[file: ${fileName}]`, contextMessages, null, { quotedContent, threadContext, threadRootId, groupName: getGroupName(chatId), smartHint: true });
         sendToC4('feishu', endpoint, msg, groupRejectReply);
         return;
       }
@@ -1319,7 +1340,7 @@ async function handleMessage(data) {
       }
       const result = localPath ? await downloadFile(messageId, fileKey, localPath) : { success: false };
       if (result.success && localPath) {
-        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, { quotedContent, threadContext, threadRootId });
+        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, { quotedContent, threadContext, threadRootId, groupName: getGroupName(chatId) });
         sendToC4('feishu', endpoint, msg, groupRejectReply);
       } else {
         removeTypingIndicator(messageId);
@@ -1329,7 +1350,7 @@ async function handleMessage(data) {
       return;
     }
 
-    const msg = formatMessage('group', senderName, cleanText || text, contextMessages, null, { quotedContent, threadContext, threadRootId, smartHint: smartNoMention });
+    const msg = formatMessage('group', senderName, cleanText || text, contextMessages, null, { quotedContent, threadContext, threadRootId, groupName: getGroupName(chatId), smartHint: smartNoMention });
     sendToC4('feishu', endpoint, msg, groupRejectReply);
   }
 }

@@ -52,7 +52,9 @@ export const DEFAULT_CONFIG = {
   },
   // Message settings
   message: {
-    context_messages: 10
+    context_messages: 10,
+    // Send messages as interactive cards with markdown rendering (default: off)
+    useMarkdownCard: false
   }
 };
 
@@ -127,7 +129,9 @@ export function saveConfig(newConfig) {
     return true;
   } catch (err) {
     console.error(`[feishu] Failed to save config: ${err.message}`);
-    try { fs.unlinkSync(tmpPath); } catch {}
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
     return false;
   }
 }
@@ -171,7 +175,13 @@ export function watchConfig(onChange) {
     });
     configWatcher.on('error', (err) => {
       console.warn(`[feishu] Config watcher error: ${err.message}`);
-      try { configWatcher.close(); } catch {}
+      if (configReloadTimer) {
+        clearTimeout(configReloadTimer);
+        configReloadTimer = null;
+      }
+      try {
+        configWatcher.close();
+      } catch {}
       configWatcher = null;
     });
   }
