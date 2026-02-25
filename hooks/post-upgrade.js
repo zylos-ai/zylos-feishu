@@ -82,11 +82,10 @@ if (fs.existsSync(configPath)) {
       migrated = true;
     }
     if (config.dmPolicy === undefined) {
-      // This only runs for pre-whitelist configs (no whitelist, no dmPolicy).
-      // Migration 5 handles configs WITH whitelist. New installs already have
-      // dmPolicy from DEFAULT_CONFIG. Pre-whitelist era had no DM restrictions,
-      // so default to 'open' (matching loadConfig runtime behavior).
-      config.dmPolicy = 'open';
+      // Pre-whitelist config (very old, no whitelist field at all).
+      // Default to 'owner' — the most restrictive safe default.
+      // Owner binding handles bootstrap: first DM user becomes owner.
+      config.dmPolicy = 'owner';
       migrated = true;
       migrations.push(`Added dmPolicy=${config.dmPolicy}`);
     }
