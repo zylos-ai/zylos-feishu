@@ -82,7 +82,9 @@ if (fs.existsSync(configPath)) {
       migrated = true;
     }
     if (config.dmPolicy === undefined) {
-      config.dmPolicy = config.whitelist ? 'open' : 'owner';
+      // Use _legacy_whitelist (not whitelist) because Migration 5 may have already
+      // renamed it. Pre-whitelist configs should default to 'open' (matching loadConfig).
+      config.dmPolicy = config._legacy_whitelist ? 'open' : 'owner';
       migrated = true;
       migrations.push(`Added dmPolicy=${config.dmPolicy}`);
     }
