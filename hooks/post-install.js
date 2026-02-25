@@ -29,7 +29,8 @@ const ENV_FILE = path.join(HOME, 'zylos/.env');
 const INITIAL_CONFIG = {
   enabled: true,
   connection_mode: 'websocket',
-  webhook_port: 3458
+  webhook_port: 3458,
+  message: { useMarkdownCard: true }
 };
 
 const isInteractive = process.stdin.isTTY === true;

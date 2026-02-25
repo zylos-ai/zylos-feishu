@@ -196,6 +196,13 @@ if (fs.existsSync(configPath)) {
       }
     }
 
+    // Migration 9: Default useMarkdownCard to true
+    if (config.message.useMarkdownCard === undefined) {
+      config.message.useMarkdownCard = true;
+      migrated = true;
+      migrations.push('Added message.useMarkdownCard=true');
+    }
+
     // Migration 10: Migrate legacy group config to new groups map
     if ((Array.isArray(config.allowed_groups) && config.allowed_groups.length > 0) ||
         (Array.isArray(config.smart_groups) && config.smart_groups.length > 0) ||
