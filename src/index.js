@@ -1141,7 +1141,8 @@ async function handleMessage(data) {
     }
 
     if (!isDmAllowed(senderUserId, senderOpenId)) {
-      console.log(`[feishu] Private message from non-allowed user ${senderUserId} (dmPolicy=${config.dmPolicy || 'owner'}), ignoring`);
+      console.log(`[feishu] Private message from non-allowed user ${senderUserId} (dmPolicy=${config.dmPolicy || 'owner'}), rejecting`);
+      sendMessage(chatId, "Sorry, I'm not available for private messages. Please ask my owner to grant you access.").catch(() => {});
       return;
     }
 
