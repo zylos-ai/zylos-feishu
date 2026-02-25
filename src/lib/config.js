@@ -30,12 +30,10 @@ export const DEFAULT_CONFIG = {
     open_id: '',
     name: ''
   },
-  // Whitelist settings (disabled by default)
-  whitelist: {
-    enabled: false,
-    private_users: [],
-    group_users: []
-  },
+  // DM policy: 'open' (anyone can DM), 'allowlist' (only dmAllowFrom), 'owner' (owner only)
+  dmPolicy: 'owner',
+  // DM allowlist — user_id or open_id values (used when dmPolicy = 'allowlist')
+  dmAllowFrom: [],
   // Group policy: 'open' (all groups), 'allowlist' (only configured groups), 'disabled' (no groups)
   groupPolicy: 'allowlist',
   // Per-group configuration map
@@ -54,7 +52,9 @@ export const DEFAULT_CONFIG = {
   },
   // Message settings
   message: {
-    context_messages: 10
+    context_messages: 10,
+    // Send messages as interactive cards with markdown rendering (default: on)
+    useMarkdownCard: true
   }
 };
 
@@ -75,6 +75,27 @@ export function loadConfig() {
       // but only if the file doesn't already have an explicit groupPolicy
       if (config.group_whitelist !== undefined && !('groupPolicy' in parsed)) {
         config.groupPolicy = config.group_whitelist?.enabled !== false ? 'allowlist' : 'open';
+      }
+      // Runtime backward-compat: derive dmPolicy for configs without explicit dmPolicy
+      if (!('dmPolicy' in parsed)) {
+        if (config.whitelist) {
+          // Has legacy whitelist → derive from it
+          const wlEnabled = config.whitelist.private_enabled ?? config.whitelist.enabled ?? false;
+          config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
+          if (!('dmAllowFrom' in parsed)) {
+            const legacyUsers = [
+              ...(config.whitelist.private_users || []),
+              ...(config.whitelist.group_users || [])
+            ];
+            if (legacyUsers.length) {
+              config.dmAllowFrom = legacyUsers;
+            }
+          }
+        } else {
+          // Pre-whitelist era config → default to owner (safest default).
+          // Owner binding handles bootstrap: first DM user becomes owner.
+          config.dmPolicy = 'owner';
+        }
       }
     } else {
       console.warn(`[feishu] Config file not found: ${CONFIG_PATH}`);
@@ -109,7 +130,9 @@ export function saveConfig(newConfig) {
     return true;
   } catch (err) {
     console.error(`[feishu] Failed to save config: ${err.message}`);
-    try { fs.unlinkSync(tmpPath); } catch {}
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
     return false;
   }
 }
@@ -153,7 +176,13 @@ export function watchConfig(onChange) {
     });
     configWatcher.on('error', (err) => {
       console.warn(`[feishu] Config watcher error: ${err.message}`);
-      try { configWatcher.close(); } catch {}
+      if (configReloadTimer) {
+        clearTimeout(configReloadTimer);
+        configReloadTimer = null;
+      }
+      try {
+        configWatcher.close();
+      } catch {}
       configWatcher = null;
     });
   }
