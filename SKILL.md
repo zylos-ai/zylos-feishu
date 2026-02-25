@@ -116,7 +116,13 @@ node ~/zylos/.claude/skills/feishu/src/admin.js remove-smart-group <chat_id>
 node ~/zylos/.claude/skills/feishu/src/admin.js enable-group-whitelist
 node ~/zylos/.claude/skills/feishu/src/admin.js disable-group-whitelist
 
-# Whitelist
+# DM Access Control
+node ~/zylos/.claude/skills/feishu/src/admin.js set-dm-policy <open|allowlist|owner>
+node ~/zylos/.claude/skills/feishu/src/admin.js list-dm-allow
+node ~/zylos/.claude/skills/feishu/src/admin.js add-dm-allow <user_id_or_open_id>
+node ~/zylos/.claude/skills/feishu/src/admin.js remove-dm-allow <user_id_or_open_id>
+
+# Legacy Whitelist (aliases for dmPolicy commands)
 node ~/zylos/.claude/skills/feishu/src/admin.js list-whitelist
 node ~/zylos/.claude/skills/feishu/src/admin.js add-whitelist <user_id_or_open_id>
 node ~/zylos/.claude/skills/feishu/src/admin.js remove-whitelist <user_id_or_open_id>
@@ -210,7 +216,7 @@ If your domain is behind Cloudflare proxy with Flexible SSL mode, Caddy's automa
 ## Owner
 
 First user to send a private message becomes the owner (primary partner).
-Owner is automatically whitelisted and can always communicate with the bot.
+Owner always bypasses all access checks and can communicate with the bot regardless of dmPolicy or groupPolicy settings.
 
 Owner info stored in config.json:
 ```json

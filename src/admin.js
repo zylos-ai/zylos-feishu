@@ -212,97 +212,74 @@ const commands = {
     console.log('Run: pm2 restart zylos-feishu');
   },
 
-  'list-whitelist': () => {
-    const config = loadConfig();
-    const wl = config.whitelist || { enabled: false, private_users: [], group_users: [] };
-    console.log(`Whitelist (${wl.enabled ? 'enabled' : 'disabled'}):`);
-    console.log('  Private users:', wl.private_users?.length ? wl.private_users.join(', ') : 'none');
-    console.log('  Group users:', wl.group_users?.length ? wl.group_users.join(', ') : 'none');
-  },
-
-  'add-whitelist': (userId) => {
-    if (!userId) {
-      console.error('Usage: admin.js add-whitelist <user_id_or_open_id>');
+  'set-dm-policy': (policy) => {
+    const valid = ['open', 'allowlist', 'owner'];
+    if (!valid.includes(policy)) {
+      console.error(`Usage: admin.js set-dm-policy <${valid.join('|')}>`);
       process.exit(1);
     }
     const config = loadConfig();
-    if (!config.whitelist) {
-      config.whitelist = { enabled: false, private_users: [], group_users: [] };
-    }
-    if (!Array.isArray(config.whitelist.private_users)) {
-      config.whitelist.private_users = [];
-    }
-    if (!Array.isArray(config.whitelist.group_users)) {
-      config.whitelist.group_users = [];
-    }
+    config.dmPolicy = policy;
+    persistConfig(config);
+    const desc = { open: 'Anyone can DM', allowlist: 'Only dmAllowFrom users can DM', owner: 'Only owner can DM' };
+    console.log(`DM policy set to: ${policy} (${desc[policy]})`);
+    console.log('Run: pm2 restart zylos-feishu');
+  },
 
-    if (!config.whitelist.private_users.includes(userId)) {
-      config.whitelist.private_users.push(userId);
+  'list-dm-allow': () => {
+    const config = loadConfig();
+    console.log(`DM policy: ${config.dmPolicy || 'owner'}`);
+    console.log(`Group policy: ${config.groupPolicy || 'allowlist'}`);
+    const allowFrom = config.dmAllowFrom || [];
+    console.log(`DM allowFrom (${allowFrom.length}):`, allowFrom.length ? allowFrom.join(', ') : 'none');
+  },
+
+  'add-dm-allow': (userId) => {
+    if (!userId) {
+      console.error('Usage: admin.js add-dm-allow <user_id_or_open_id>');
+      process.exit(1);
     }
-    if (!config.whitelist.group_users.includes(userId)) {
-      config.whitelist.group_users.push(userId);
+    const config = loadConfig();
+    if (!Array.isArray(config.dmAllowFrom)) {
+      config.dmAllowFrom = [];
+    }
+    if (!config.dmAllowFrom.includes(userId)) {
+      config.dmAllowFrom.push(userId);
     }
     persistConfig(config);
-    console.log(`Added ${userId} to whitelist (private + group)`);
-    if (!config.whitelist.enabled) {
-      console.log('Note: Whitelist is currently disabled (all users allowed).');
-      console.log('To enable: edit config.json and set whitelist.enabled = true');
+    console.log(`Added ${userId} to dmAllowFrom`);
+    if ((config.dmPolicy || 'owner') !== 'allowlist') {
+      console.log(`Note: dmPolicy is "${config.dmPolicy || 'owner'}", set to "allowlist" for this to take effect.`);
     }
     console.log('Run: pm2 restart zylos-feishu');
   },
 
-  'remove-whitelist': (userId) => {
+  'remove-dm-allow': (userId) => {
     if (!userId) {
-      console.error('Usage: admin.js remove-whitelist <user_id_or_open_id>');
+      console.error('Usage: admin.js remove-dm-allow <user_id_or_open_id>');
       process.exit(1);
     }
     const config = loadConfig();
-    if (!config.whitelist) {
-      console.log('No whitelist configured');
+    if (!Array.isArray(config.dmAllowFrom)) {
+      console.log('No dmAllowFrom configured');
       return;
     }
-
-    let removed = false;
-    const piIdx = (config.whitelist.private_users || []).indexOf(userId);
-    if (piIdx !== -1) {
-      config.whitelist.private_users.splice(piIdx, 1);
-      removed = true;
-    }
-    const giIdx = (config.whitelist.group_users || []).indexOf(userId);
-    if (giIdx !== -1) {
-      config.whitelist.group_users.splice(giIdx, 1);
-      removed = true;
-    }
-
-    if (removed) {
+    const idx = config.dmAllowFrom.indexOf(userId);
+    if (idx !== -1) {
+      config.dmAllowFrom.splice(idx, 1);
       persistConfig(config);
-      console.log(`Removed ${userId} from whitelist`);
+      console.log(`Removed ${userId} from dmAllowFrom`);
     } else {
-      console.log(`${userId} not found in whitelist`);
+      console.log(`${userId} not found in dmAllowFrom`);
     }
   },
 
-  'enable-whitelist': () => {
-    const config = loadConfig();
-    if (!config.whitelist) {
-      config.whitelist = { enabled: true, private_users: [], group_users: [] };
-    } else {
-      config.whitelist.enabled = true;
-    }
-    persistConfig(config);
-    console.log('Whitelist enabled. Only owner + whitelisted users can interact.');
-    console.log('Run: pm2 restart zylos-feishu');
-  },
-
-  'disable-whitelist': () => {
-    const config = loadConfig();
-    if (config.whitelist) {
-      config.whitelist.enabled = false;
-    }
-    persistConfig(config);
-    console.log('Whitelist disabled. All users can interact.');
-    console.log('Run: pm2 restart zylos-feishu');
-  },
+  // Legacy whitelist commands → mapped to dmPolicy
+  'list-whitelist': () => commands['list-dm-allow'](),
+  'enable-whitelist': () => commands['set-dm-policy']('allowlist'),
+  'disable-whitelist': () => commands['set-dm-policy']('open'),
+  'add-whitelist': (userId) => commands['add-dm-allow'](userId),
+  'remove-whitelist': (userId) => commands['remove-dm-allow'](userId),
 
   // Legacy commands mapped to new group policy
   'enable-group-whitelist': () => commands['set-group-policy']('allowlist'),
@@ -357,16 +334,25 @@ Commands:
   enable-group-whitelist              → set-group-policy allowlist
   disable-group-whitelist             → set-group-policy open
 
-  Whitelist (access control):
-  list-whitelist                      List whitelist entries
-  add-whitelist <user_id_or_open_id>  Add to whitelist
-  remove-whitelist <id>               Remove from whitelist
-  enable-whitelist                    Enable whitelist filtering
-  disable-whitelist                   Disable whitelist (allow all)
+  DM Access Control:
+  set-dm-policy <open|allowlist|owner> Set DM policy
+  list-dm-allow                       Show DM policy and allowFrom list
+  add-dm-allow <user_id_or_open_id>   Add user to dmAllowFrom
+  remove-dm-allow <id>                Remove user from dmAllowFrom
+
+  Legacy (whitelist → dmPolicy aliases):
+  list-whitelist                      → list-dm-allow
+  add-whitelist <id>                  → add-dm-allow
+  remove-whitelist <id>               → remove-dm-allow
+  enable-whitelist                    → set-dm-policy allowlist
+  disable-whitelist                   → set-dm-policy open
 
   show-owner                          Show current owner
 
-Note: Owner bypass works in allowlist/open modes; disabled policy blocks all group messages.
+Permission flow:
+  Private DM:  dmPolicy (open|allowlist|owner) + dmAllowFrom
+  Group chat:  groupPolicy → groups config → per-group allowFrom
+  Owner always bypasses all checks.
 
 After changes, restart bot: pm2 restart zylos-feishu
 `);
@@ -435,6 +421,22 @@ function migrateGroupConfig(config) {
   if (!config.groupPolicy) {
     config.groupPolicy = 'allowlist';
     migrations.push('Set default groupPolicy=allowlist');
+    migrated = true;
+  }
+
+  // Migrate legacy whitelist to dmPolicy/dmAllowFrom
+  if (config.whitelist && !config.dmPolicy) {
+    const wlEnabled = config.whitelist.private_enabled ?? config.whitelist.enabled ?? false;
+    config.dmPolicy = wlEnabled ? 'allowlist' : 'owner';
+    if (config.whitelist.private_users?.length) {
+      config.dmAllowFrom = [...(config.dmAllowFrom || [])];
+      for (const u of config.whitelist.private_users) {
+        if (!config.dmAllowFrom.includes(u)) config.dmAllowFrom.push(u);
+      }
+    }
+    migrations.push(`Migrated whitelist.enabled=${wlEnabled} → dmPolicy=${config.dmPolicy}, ${(config.dmAllowFrom || []).length} users in dmAllowFrom`);
+    config._legacy_whitelist = config.whitelist;
+    delete config.whitelist;
     migrated = true;
   }
 

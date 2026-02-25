@@ -1025,16 +1025,24 @@ function isOwner(userId, openId) {
     || (ownerOpenId !== undefined && ownerOpenId !== null && openId !== undefined && openId !== null && String(ownerOpenId) === String(openId));
 }
 
-// Check whitelist (supports both user_id and open_id)
-// Owner is always allowed
-function isWhitelisted(userId, openId) {
+// Check DM access — uses dmPolicy + dmAllowFrom
+function isDmAllowed(userId, openId) {
   if (isOwner(userId, openId)) return true;
-  if (!config.whitelist?.enabled) return true;
-  const allowedUsers = [...(config.whitelist.private_users || []), ...(config.whitelist.group_users || [])]
-    .map(v => String(v));
-  if (userId !== undefined && userId !== null && allowedUsers.includes(String(userId))) return true;
-  if (openId !== undefined && openId !== null && allowedUsers.includes(String(openId))) return true;
-  return false;
+  const policy = config.dmPolicy || 'owner';
+  if (policy === 'open') return true;
+  if (policy === 'owner') return false;
+  // policy === 'allowlist'
+  const allowFrom = (config.dmAllowFrom || []).map(String);
+  // Backward compat: also check legacy whitelist.private_users
+  if (config.whitelist?.private_users?.length) {
+    for (const u of config.whitelist.private_users) {
+      if (!allowFrom.includes(String(u))) allowFrom.push(String(u));
+    }
+  }
+  const normalizedUserId = userId === undefined || userId === null ? '' : String(userId);
+  const normalizedOpenId = openId === undefined || openId === null ? '' : String(openId);
+  return (normalizedUserId && allowFrom.includes(normalizedUserId)) ||
+    (normalizedOpenId && allowFrom.includes(normalizedOpenId));
 }
 
 async function sendThreadAwareMessage(chatId, text, { threadId, rootId, parentId, messageId } = {}) {
@@ -1112,8 +1120,8 @@ async function handleMessage(data) {
       await bindOwner(senderUserId, senderOpenId);
     }
 
-    if (!isWhitelisted(senderUserId, senderOpenId)) {
-      console.log(`[feishu] Private message from non-whitelisted user ${senderUserId}, ignoring`);
+    if (!isDmAllowed(senderUserId, senderOpenId)) {
+      console.log(`[feishu] Private message from non-allowed user ${senderUserId} (dmPolicy=${config.dmPolicy || 'owner'}), ignoring`);
       return;
     }
 
@@ -1220,14 +1228,8 @@ async function handleMessage(data) {
       }
     }
 
-    // For non-smart groups, also check global whitelist
-    if (!smart) {
-      const senderIsOwner = isOwner(senderUserId, senderOpenId);
-      if (!senderIsOwner && !isWhitelisted(senderUserId, senderOpenId)) {
-        console.log(`[feishu] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
-        return;
-      }
-    }
+    // Group user access is controlled by groupPolicy + groups config + per-group allowFrom.
+    // No separate user-level whitelist for groups (dmPolicy/dmAllowFrom only applies to DMs).
 
     await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, data._timestamp || null, mentions, threadId);
 
