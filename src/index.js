@@ -1029,6 +1029,7 @@ function extractMessageContent(message) {
 // Bind owner (first private chat user)
 async function bindOwner(userId, openId) {
   const userName = await resolveUserName(userId);
+  const previousOwner = config.owner;
   config.owner = {
     bound: true,
     user_id: userId,
@@ -1036,7 +1037,9 @@ async function bindOwner(userId, openId) {
     name: userName
   };
   if (!saveConfig(config)) {
+    config.owner = previousOwner;
     console.error('[feishu] Failed to persist owner binding');
+    return null;
   }
   console.log(`[feishu] Owner bound: ${userName} (${userId})`);
   return userName;
@@ -1137,7 +1140,8 @@ async function handleMessage(data) {
   // Private chat handling
   if (chatType === 'p2p') {
     if (!config.owner?.bound) {
-      await bindOwner(senderUserId, senderOpenId);
+      const boundOwner = await bindOwner(senderUserId, senderOpenId);
+      if (!boundOwner) return;
     }
 
     if (!isDmAllowed(senderUserId, senderOpenId)) {
