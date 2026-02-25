@@ -76,26 +76,19 @@ export function loadConfig() {
       }
       // Runtime backward-compat: derive dmPolicy for configs without explicit dmPolicy
       if (!('dmPolicy' in parsed)) {
-        if ('whitelist' in parsed) {
+        if (config.whitelist) {
           // Has legacy whitelist → derive from it
-          const wl = parsed.whitelist || {};
-          const legacyUsers = [
-            ...(config.whitelist?.private_users || []),
-            ...(config.whitelist?.group_users || [])
-          ];
-          const hasEntries = legacyUsers.length > 0;
-          const wlEnabled = wl.private_enabled ?? wl.enabled;
-          if (wlEnabled === false) {
-            // Explicitly disabled whitelist → open access
-            config.dmPolicy = 'open';
-          } else if (hasEntries || wlEnabled === true) {
-            // Has entries or explicitly enabled → allowlist
-            config.dmPolicy = 'allowlist';
-            if (!('dmAllowFrom' in parsed) && hasEntries) {
+          const wlEnabled = config.whitelist.private_enabled ?? config.whitelist.enabled ?? false;
+          config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
+          if (!('dmAllowFrom' in parsed)) {
+            const legacyUsers = [
+              ...(config.whitelist.private_users || []),
+              ...(config.whitelist.group_users || [])
+            ];
+            if (legacyUsers.length) {
               config.dmAllowFrom = legacyUsers;
             }
           }
-          // else: no entries, no explicit enabled flag → leave as default 'owner'
         } else {
           // Pre-whitelist era config → no DM restrictions existed, default to open
           config.dmPolicy = 'open';
