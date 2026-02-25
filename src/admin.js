@@ -429,13 +429,14 @@ function migrateGroupConfig(config) {
   // not for default whitelist objects injected by loadConfig()'s DEFAULT_CONFIG merge
   if (config.whitelist && !config.dmPolicy) {
     const wl = config.whitelist;
-    const hasEntries = wl.private_users?.length > 0;
+    const legacyUsers = [...(wl.private_users || []), ...(wl.group_users || [])];
+    const hasEntries = legacyUsers.length > 0;
     const wlEnabled = wl.private_enabled ?? wl.enabled ?? false;
     if (hasEntries || wlEnabled) {
       config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
       if (hasEntries) {
         config.dmAllowFrom = [...(config.dmAllowFrom || [])];
-        for (const u of wl.private_users) {
+        for (const u of legacyUsers) {
           if (!config.dmAllowFrom.includes(u)) config.dmAllowFrom.push(u);
         }
       }
