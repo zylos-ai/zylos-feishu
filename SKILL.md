@@ -1,7 +1,16 @@
 ---
 name: feishu
 version: 0.2.2
-description: Feishu communication channel
+description: >-
+  Feishu (飞书, China domestic) communication channel. Supports WebSocket and webhook modes.
+  Use when: (1) replying to Feishu messages (DM or group @mentions),
+  (2) sending proactive messages or media (images, files) to Feishu users or groups,
+  (3) managing DM access control (dmPolicy: open/allowlist/owner, dmAllowFrom list),
+  (4) managing group access control (groupPolicy, per-group allowFrom, smart/mention modes),
+  (5) reading or creating Feishu documents, spreadsheets, or calendar events via CLI,
+  (6) configuring the bot (admin CLI, markdown card settings, connection mode, verification token),
+  (7) troubleshooting Feishu WebSocket connection or webhook issues.
+  Config at ~/zylos/components/feishu/config.json. Service: pm2 zylos-feishu.
 type: communication
 
 lifecycle:
@@ -48,20 +57,9 @@ dependencies:
 
 Feishu communication channel for zylos.
 
-## Dependencies
+Depends on: comm-bridge (C4 message routing).
 
-- comm-bridge (for C4 message routing)
-
-## When to Use
-
-- Receiving messages from Feishu (private chat or @mention in groups)
-- Sending messages via Feishu
-- Accessing Feishu documents, spreadsheets, calendar
-- Managing Feishu groups and users
-
-## How to Use
-
-### Sending Messages
+## Sending Messages
 
 ```bash
 # Via C4 send interface
