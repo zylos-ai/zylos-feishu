@@ -76,6 +76,15 @@ export function loadConfig() {
       if (config.group_whitelist !== undefined && !('groupPolicy' in parsed)) {
         config.groupPolicy = config.group_whitelist?.enabled !== false ? 'allowlist' : 'open';
       }
+      // Runtime backward-compat: derive dmPolicy from legacy whitelist
+      // Only triggers for configs with whitelist in file but no dmPolicy yet
+      if ('whitelist' in parsed && !('dmPolicy' in parsed)) {
+        const wlEnabled = config.whitelist?.private_enabled ?? config.whitelist?.enabled ?? false;
+        config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
+        if (!('dmAllowFrom' in parsed) && config.whitelist?.private_users?.length) {
+          config.dmAllowFrom = [...config.whitelist.private_users];
+        }
+      }
     } else {
       console.warn(`[feishu] Config file not found: ${CONFIG_PATH}`);
       config = { ...DEFAULT_CONFIG };
