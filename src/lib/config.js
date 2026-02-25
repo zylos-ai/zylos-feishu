@@ -78,15 +78,15 @@ export function loadConfig() {
       }
       // Runtime backward-compat: derive dmPolicy from legacy whitelist
       // Only triggers for configs with whitelist in file but no dmPolicy yet
+      // Guard: only migrate when whitelist has actual data, not default objects
       if ('whitelist' in parsed && !('dmPolicy' in parsed)) {
-        const wlEnabled = config.whitelist?.private_enabled ?? config.whitelist?.enabled ?? false;
-        config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
-        if (!('dmAllowFrom' in parsed)) {
-          const legacyUsers = [
-            ...(config.whitelist?.private_users || []),
-            ...(config.whitelist?.group_users || [])
-          ];
-          if (legacyUsers.length) {
+        const wl = config.whitelist || {};
+        const legacyUsers = [...(wl.private_users || []), ...(wl.group_users || [])];
+        const hasEntries = legacyUsers.length > 0;
+        const wlEnabled = wl.private_enabled ?? wl.enabled ?? false;
+        if (hasEntries || wlEnabled) {
+          config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
+          if (!('dmAllowFrom' in parsed) && hasEntries) {
             config.dmAllowFrom = legacyUsers;
           }
         }
