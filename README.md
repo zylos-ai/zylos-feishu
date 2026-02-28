@@ -2,7 +2,7 @@
   <img src="./assets/logo.png" alt="Zylos" height="120">
 </p>
 
-<h1 align="center">🐙 zylos-feishu</h1>
+<h1 align="center">zylos-feishu</h1>
 
 > **Zylos** (/ˈzaɪ.lɒs/ 赛洛丝) — Give your AI a life
 
