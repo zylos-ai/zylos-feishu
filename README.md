@@ -2,7 +2,7 @@
   <img src="./assets/logo.png" alt="Zylos" height="120">
 </p>
 
-<h1 align="center">zylos-feishu</h1>
+<h1 align="center">🐙 zylos-feishu</h1>
 
 <p align="center">
   飞书 (Feishu) messaging component for <a href="https://github.com/zylos-ai/zylos-core">Zylos</a> agents.
