@@ -19,6 +19,7 @@ dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig, DATA_DIR } from '../src/lib/config.js';
 import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
+import { initMention, buildMentionContent, buildMentionMarkdown } from '../src/lib/mention.js';
 
 const TYPING_DIR = path.join(DATA_DIR, 'typing');
 
@@ -238,7 +239,9 @@ async function sendText(endpoint, text) {
     const isFirstChunk = i === 0;
 
     if (useCard) {
-      result = await sendCardChunk(chunks[i], isFirstChunk);
+      // Apply @mention conversion for markdown card path
+      const cardChunk = buildMentionMarkdown(chunks[i]);
+      result = await sendCardChunk(cardChunk, isFirstChunk);
       // Fall back to plain text if card sending fails
       if (!result.success) {
         console.log('[feishu] Card send failed, falling back to text:', result.message);
@@ -267,6 +270,9 @@ async function sendText(endpoint, text) {
   }
 }
 
+// Initialize mention system (loads cache + override_map, starts periodic sync)
+initMention();
+
 /**
  * Send a single chunk as plain text with routing logic.
  */
@@ -276,10 +282,13 @@ async function sendPlainTextChunk(endpoint, chunk, isFirstChunk) {
   const isGroup = type === 'group';
   let result;
 
+  // Detect @mentions and build appropriate message format
+  const { msgType, content } = buildMentionContent(chunk);
+
   if (root) {
     const replyTarget = parent || root;
     try {
-      result = await replyToMessage(replyTarget, chunk);
+      result = await replyToMessage(replyTarget, content, msgType);
     } catch (err) {
       console.log('[feishu] Reply threw, falling back:', err.message);
       result = { success: false };
@@ -287,24 +296,24 @@ async function sendPlainTextChunk(endpoint, chunk, isFirstChunk) {
     if (!result.success) {
       console.log('[feishu] Reply failed, falling back:', result.message);
       result = isDM
-        ? await sendMessage(chatId, chunk, 'chat_id', 'text')
-        : await sendToGroup(endpoint, chunk);
+        ? await sendMessage(chatId, content, 'chat_id', msgType)
+        : await sendToGroup(endpoint, content, msgType);
     }
   } else if (isFirstChunk && msg && isGroup) {
     try {
-      result = await replyToMessage(msg, chunk);
+      result = await replyToMessage(msg, content, msgType);
     } catch (err) {
       console.log('[feishu] Reply threw, falling back to sendToGroup:', err.message);
       result = { success: false };
     }
     if (!result.success) {
       console.log('[feishu] Reply failed, falling back to sendToGroup:', result.message);
-      result = await sendToGroup(endpoint, chunk);
+      result = await sendToGroup(endpoint, content, msgType);
     }
   } else if (isDM) {
-    result = await sendMessage(chatId, chunk, 'chat_id', 'text');
+    result = await sendMessage(chatId, content, 'chat_id', msgType);
   } else {
-    result = await sendToGroup(endpoint, chunk);
+    result = await sendToGroup(endpoint, content, msgType);
   }
 
   return result;

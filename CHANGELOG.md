@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] - 2026-04-17
+
+### Added
+- @mention resolution module (`src/lib/mention.js`): auto-detect `@name` in outgoing messages and convert to Feishu native @mention (rich-text post for plain text path, `<at>` tag for markdown card path)
+- Two-layer mention map: auto-sync from group members API + config-driven override map
+- Disk cache with configurable TTL (default 6h), atomic write (tmp+rename), graceful degradation on failure
+- Paginated group member fetch (`im.chatMembers.get`) with full page_token handling
+- Config block `mention.source_group_id`, `mention.refresh_interval_hours`, `mention.override_map`
+- Unit tests for mention module (24 tests covering edge cases, snapshot isolation, fallback paths)
+
+### Changed
+- `scripts/send.js`: plain text path now detects @mentions and auto-converts to `post` msg type; card path applies `buildMentionMarkdown` for `<at>` tags
+- Hardcoded `MENTION_MAP` in send.js replaced by config-driven `mention.override_map`
+
 ## [0.2.6] - 2026-03-02
 
 ### Security
