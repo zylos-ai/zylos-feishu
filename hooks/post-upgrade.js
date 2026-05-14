@@ -141,6 +141,9 @@ if (fs.existsSync(configPath)) {
       if (config.smart_groups?.length > 0) {
         config._legacy_smart_groups = config.smart_groups;
       }
+      if (config.group_whitelist !== undefined) {
+        config._legacy_group_whitelist = config.group_whitelist;
+      }
 
       // Remove legacy fields
       delete config.allowed_groups;
