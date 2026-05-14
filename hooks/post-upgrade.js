@@ -77,6 +77,7 @@ if (fs.existsSync(configPath)) {
         }
       }
       migrations.push(`Migrated whitelist → dmPolicy=${config.dmPolicy}, ${(config.dmAllowFrom || []).length} users in dmAllowFrom`);
+      config._legacy_whitelist = config.whitelist;
       delete config.whitelist;
       migrated = true;
     }
@@ -188,11 +189,12 @@ if (fs.existsSync(configPath)) {
         migrated = true;
         migrations.push('Added message.context_messages');
       }
-      // Clean up removed field
+      // Clean up removed field (preserve under _legacy_message_max_length for recovery)
       if (config.message.max_length !== undefined) {
+        config._legacy_message_max_length = config.message.max_length;
         delete config.message.max_length;
         migrated = true;
-        migrations.push('Removed unused message.max_length');
+        migrations.push('Removed unused message.max_length (preserved as _legacy_message_max_length)');
       }
     }
 
