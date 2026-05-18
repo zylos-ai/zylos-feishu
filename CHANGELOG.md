@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] - 2026-05-18
+
+### Fixed
+- Post-upgrade hook now backs up `config.json` to
+  `config.json.backup.<ISO-timestamp>` before mutation and uses atomic
+  write (temp + rename) for the new config (#29)
+
+### Removed
+- Reverted in-config `_legacy_*` field injection
+  (`_legacy_whitelist`, `_legacy_group_whitelist`,
+  `_legacy_message_max_length`) in favor of whole-file backups; the
+  original config schema is preserved (#29)
+
 ## [0.2.6] - 2026-03-02
 
 ### Security
