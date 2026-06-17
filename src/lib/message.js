@@ -320,11 +320,18 @@ export async function uploadFile(filePath, fileType = 'stream') {
       },
     });
 
-    if (res.code === 0) {
-      return { success: true, fileKey: res.data.file_key, message: 'File uploaded successfully' };
-    } else {
-      return { success: false, message: `Failed to upload file: ${res.msg}`, code: res.code };
+    // SDK response shape varies: im.file.create returns { file_key } directly
+    // (unwrapped), while im.message.create returns { code, data, msg } wrapper.
+    // Handle both forms so this works across SDK versions.
+    const fileKey = res.file_key ?? res.data?.file_key;
+    if (fileKey) {
+      return { success: true, fileKey, message: 'File uploaded successfully' };
     }
+    return {
+      success: false,
+      message: `Failed to upload file: ${res.msg || 'unknown error'}`,
+      code: res.code,
+    };
   } catch (err) {
     return { success: false, message: err.message };
   }
