@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-02
+
+### Added
+- Integrate lark-cli binary with 27 sub-skill modules (documents, sheets, slides,
+  calendar, tasks, mail, wiki, approval, attendance, OKR, and more)
+- Shared post-install hook (`post-install-shared.js`) for lark-cli download,
+  profile initialization, and credential configuration
+- Post-upgrade hook to re-run lark-cli setup on component upgrade
+- `lark-cli-bridge.js` — helper to invoke lark-cli with auto-injected `--profile feishu`
+- Unit tests for lark-cli-bridge
+
+### Changed
+- SKILL.md expanded with lark-cli capability modules and usage guidance
+- Named profile support: lark-cli configured with `--name feishu` profile
+
 ## [0.2.7] - 2026-05-18
 
 ### Fixed
