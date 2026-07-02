@@ -25,6 +25,7 @@ import { sendToUser } from './message.js';
 import { getConfig } from './config.js';
 
 const AUTH_REQUIRED_TYPE_REGEX = /_user_login_required$/;
+const PROFILE_NAME = 'feishu';
 
 /**
  * Thrown when `lark-cli` returns an error that indicates the current
@@ -54,8 +55,9 @@ export function runLarkCli(args, opts = {}) {
   if (!Array.isArray(args)) {
     throw new TypeError('runLarkCli: args must be an array of strings');
   }
+  const fullArgs = ['--profile', PROFILE_NAME, ...args];
   try {
-    return execFileSync('lark-cli', args, {
+    return execFileSync('lark-cli', fullArgs, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       ...opts,

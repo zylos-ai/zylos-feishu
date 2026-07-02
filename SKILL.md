@@ -142,7 +142,9 @@ Before running `lark-cli <module> <subcmd>`:
 
 1. Read `references/<module>/SKILL.md` to confirm exact subcommands, flags, and required vs. optional args.
 2. If that module's `SKILL.md` references additional docs under its own `references/` subdirectory, read those as well.
-3. Run the command.
+3. Run the command with `--profile feishu`: `lark-cli --profile feishu <module> <subcmd> ...`
+
+The `--profile feishu` flag selects this component's credentials. Always include it — without it, lark-cli uses whichever profile is active, which may belong to zylos-lark if both are installed. The `runLarkCli()` bridge in `src/lib/lark-cli-bridge.js` injects this flag automatically.
 
 Skipping step 1 risks calling wrong subcommand names or missing required flags — `lark-cli` is feature-rich and each module covers dozens of subcommands.
 
