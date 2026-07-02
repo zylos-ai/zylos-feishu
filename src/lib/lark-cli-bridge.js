@@ -116,6 +116,20 @@ function inferDomain(errorType, args) {
 }
 
 /**
+ * Build the owner-facing auth hint message with `--profile feishu`.
+ * Exported for testing.
+ */
+export function buildAuthHint(domain) {
+  const cmd = `lark-cli --profile ${PROFILE_NAME} auth login --domain ${domain}`;
+  return (
+    `lark-cli 需要你的用户级登录(domain: ${domain})。\n` +
+    `请在终端执行:\n\n` +
+    `    ${cmd}\n\n` +
+    `扫码完成后告诉我"已登录",我会重试当前操作。`
+  );
+}
+
+/**
  * DM the configured owner with instructions to complete `lark-cli auth login`.
  *
  * @param {LarkCliAuthRequiredError} err
@@ -139,12 +153,8 @@ export async function notifyOwnerAuthRequired(err, opts = {}) {
   }
 
   const domain = err.domain || 'lark-cli';
-  const hint = err.hint || `lark-cli auth login --domain ${domain}`;
-  const msg =
-    `lark-cli 需要你的用户级登录(domain: ${domain})。\n` +
-    `请在终端执行:\n\n` +
-    `    ${hint}\n\n` +
-    `扫码完成后告诉我"已登录",我会重试当前操作。`;
+  const msg = buildAuthHint(domain);
+
 
   await sendToUser(ownerOpenId, msg, 'text');
   return true;

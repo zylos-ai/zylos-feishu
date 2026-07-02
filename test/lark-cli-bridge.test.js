@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   parseLarkCliError,
   LarkCliAuthRequiredError,
+  buildAuthHint,
 } from '../src/lib/lark-cli-bridge.js';
 
 test('parseLarkCliError extracts error envelope from clean JSON', () => {
@@ -78,4 +79,15 @@ test('LarkCliAuthRequiredError carries all context fields', () => {
 test('LarkCliAuthRequiredError formats unknown domain gracefully', () => {
   const e = new LarkCliAuthRequiredError(null, null, {}, null);
   assert.match(e.message, /unknown/);
+});
+
+test('buildAuthHint includes --profile feishu in the command', () => {
+  const msg = buildAuthHint('calendar');
+  assert.match(msg, /--profile feishu/);
+  assert.match(msg, /auth login --domain calendar/);
+});
+
+test('buildAuthHint uses profile for any domain', () => {
+  const msg = buildAuthHint('wiki');
+  assert.match(msg, /lark-cli --profile feishu auth login --domain wiki/);
 });
