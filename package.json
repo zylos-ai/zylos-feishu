@@ -7,7 +7,10 @@
   "scripts": {
     "start": "node src/index.js",
     "cli": "node src/cli.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test"
+  },
+  "larkCli": {
+    "version": "1.0.63"
   },
   "homepage": "https://github.com/zylos-ai/zylos-feishu#readme",
   "bugs": {

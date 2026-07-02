@@ -14,6 +14,58 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
+import {
+  installLarkCliBinary,
+  installLarkCliSkills,
+  syncCredentialsToLarkCli,
+} from './post-install-shared.js';
+
+const MIN_CORE_VERSION = '0.5.0';
+
+function readCoreVersion() {
+  try {
+    return execSync('zylos --version', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function semverGt(a, b) {
+  const pa = a.split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = b.split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) > (pb[i] || 0)) return true;
+    if ((pa[i] || 0) < (pb[i] || 0)) return false;
+  }
+  return false;
+}
+
+const coreVersion = readCoreVersion();
+if (!coreVersion) {
+  console.error(
+    `[post-upgrade] zylos-feishu requires zylos-core > ${MIN_CORE_VERSION}, but \`zylos --version\` could not be read.`
+  );
+  console.error(
+    '[post-upgrade] Aborting to avoid a half-upgraded state. Please run: zylos upgrade --self  (then retry).'
+  );
+  process.exit(1);
+}
+if (!semverGt(coreVersion, MIN_CORE_VERSION)) {
+  console.error(
+    `[post-upgrade] zylos-feishu requires zylos-core > ${MIN_CORE_VERSION}, found ${coreVersion}.`
+  );
+  console.error('[post-upgrade] Please run: zylos upgrade --self  (then retry).');
+  process.exit(1);
+}
+
+const __filename_hook = fileURLToPath(import.meta.url);
+const __dirname_hook = path.dirname(__filename_hook);
+const SKILL_DIR = path.resolve(__dirname_hook, '..');
 
 function timestampSuffix() {
   return new Date().toISOString().replace(/[:.]/g, '-');
@@ -308,6 +360,25 @@ if (fs.existsSync(configPath)) {
   }
 } else {
   console.log('No config file found, skipping migrations.');
+}
+
+// lark-cli integration migration
+//
+// Legacy zylos-feishu installs (pre-bundle) have only .env credentials and
+// no lark-cli on PATH / no references/. This block brings them in line
+// with the current install layout. All three steps are idempotent:
+//   - installLarkCliBinary:    no-op when `lark-cli` is already at target version
+//   - installLarkCliSkills:    no-op when all sub-skills present at target version
+//   - syncCredentialsToLarkCli: overwrites keychain every run, so secret
+//                                rotations propagate after `zylos upgrade feishu`
+console.log('\nEnsuring lark-cli integration is in place...');
+try {
+  installLarkCliBinary();
+  installLarkCliSkills(SKILL_DIR);
+  syncCredentialsToLarkCli();
+} catch (err) {
+  console.error('lark-cli integration migration failed:', err.message);
+  process.exit(1);
 }
 
 console.log('\n[post-upgrade] Complete!');
