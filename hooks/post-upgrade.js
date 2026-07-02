@@ -14,54 +14,15 @@
 
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import {
+  requireMinCoreVersion,
   installLarkCliBinary,
   installLarkCliSkills,
   syncCredentialsToLarkCli,
 } from './post-install-shared.js';
 
-const MIN_CORE_VERSION = '0.5.0';
-
-function readCoreVersion() {
-  try {
-    return execSync('zylos --version', {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-  } catch {
-    return null;
-  }
-}
-
-function semverGt(a, b) {
-  const pa = a.split('.').map((n) => parseInt(n, 10) || 0);
-  const pb = b.split('.').map((n) => parseInt(n, 10) || 0);
-  for (let i = 0; i < 3; i++) {
-    if ((pa[i] || 0) > (pb[i] || 0)) return true;
-    if ((pa[i] || 0) < (pb[i] || 0)) return false;
-  }
-  return false;
-}
-
-const coreVersion = readCoreVersion();
-if (!coreVersion) {
-  console.error(
-    `[post-upgrade] zylos-feishu requires zylos-core > ${MIN_CORE_VERSION}, but \`zylos --version\` could not be read.`
-  );
-  console.error(
-    '[post-upgrade] Aborting to avoid a half-upgraded state. Please run: zylos upgrade --self  (then retry).'
-  );
-  process.exit(1);
-}
-if (!semverGt(coreVersion, MIN_CORE_VERSION)) {
-  console.error(
-    `[post-upgrade] zylos-feishu requires zylos-core > ${MIN_CORE_VERSION}, found ${coreVersion}.`
-  );
-  console.error('[post-upgrade] Please run: zylos upgrade --self  (then retry).');
-  process.exit(1);
-}
+requireMinCoreVersion();
 
 const __filename_hook = fileURLToPath(import.meta.url);
 const __dirname_hook = path.dirname(__filename_hook);

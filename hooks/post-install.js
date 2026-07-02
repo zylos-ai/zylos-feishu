@@ -18,6 +18,7 @@ import path from 'path';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
 import {
+  requireMinCoreVersion,
   installLarkCliBinary,
   installLarkCliSkills,
   syncCredentialsToLarkCli,
@@ -125,6 +126,7 @@ if (isInteractive) {
 }
 
 // 5. lark-cli integration (idempotent — safe to re-run on reinstall)
+requireMinCoreVersion();
 console.log('\nIntegrating lark-cli...');
 try {
   installLarkCliBinary();
@@ -132,7 +134,7 @@ try {
   syncCredentialsToLarkCli();
 } catch (err) {
   console.error('lark-cli integration failed:', err.message);
-  console.error('The service will work without lark-cli; re-run the install or upgrade to retry.');
+  process.exit(1);
 }
 
 // Note: PM2 service is started by Claude after this hook completes.

@@ -2,7 +2,8 @@
 /**
  * Shared helpers for post-install and post-upgrade hooks.
  *
- * Three idempotent steps that integrate lark-cli into zylos-feishu:
+ * Four exported functions:
+ *   0. requireMinCoreVersion()          - guard: zylos-core > MIN_CORE_VERSION
  *   1. installLarkCliBinary()           - probe + version check + install/upgrade
  *   2. installLarkCliSkills(skillDir)   - probe + version check + install/upgrade
  *   3. syncCredentialsToLarkCli(opts)   - read ~/zylos/.env, delegate to
@@ -20,6 +21,8 @@ import path from 'path';
 import { execSync, execFileSync } from 'child_process';
 import { parse as parseDotenv } from 'dotenv';
 import { fileURLToPath } from 'url';
+
+const MIN_CORE_VERSION = '0.5.0';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -62,6 +65,48 @@ const DEFAULT_ENV_FILE = path.join(process.env.HOME || '', 'zylos/.env');
 const LOG_PREFIX = '[zylos-feishu]';
 const SKILLS_VERSION_FILE = '.lark-cli-version';
 
+function semverCompare(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) < (pb[i] || 0)) return -1;
+    if ((pa[i] || 0) > (pb[i] || 0)) return 1;
+  }
+  return 0;
+}
+
+/**
+ * Guard: abort if zylos-core is not installed or is too old.
+ * Called by both post-install and post-upgrade hooks.
+ */
+export function requireMinCoreVersion() {
+  let coreVersion = null;
+  try {
+    coreVersion = execSync('zylos --version', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    // not installed or not on PATH
+  }
+  if (!coreVersion) {
+    console.error(
+      `${LOG_PREFIX} requires zylos-core > ${MIN_CORE_VERSION}, but \`zylos --version\` could not be read.`
+    );
+    console.error(
+      `${LOG_PREFIX} Aborting to avoid a broken install. Please run: zylos upgrade --self  (then retry).`
+    );
+    process.exit(1);
+  }
+  if (semverCompare(coreVersion, MIN_CORE_VERSION) <= 0) {
+    console.error(
+      `${LOG_PREFIX} requires zylos-core > ${MIN_CORE_VERSION}, found ${coreVersion}.`
+    );
+    console.error(`${LOG_PREFIX} Please run: zylos upgrade --self  (then retry).`);
+    process.exit(1);
+  }
+}
+
 function getTargetVersion() {
   try {
     const pkg = JSON.parse(
@@ -93,16 +138,6 @@ function getInstalledVersion() {
   } catch {
     return null;
   }
-}
-
-function semverCompare(a, b) {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    if ((pa[i] || 0) < (pb[i] || 0)) return -1;
-    if ((pa[i] || 0) > (pb[i] || 0)) return 1;
-  }
-  return 0;
 }
 
 /**
