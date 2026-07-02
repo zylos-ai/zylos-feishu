@@ -17,9 +17,16 @@ import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
+import {
+  requireMinCoreVersion,
+  installLarkCliBinary,
+  installLarkCliSkills,
+  syncCredentialsToLarkCli,
+} from './post-install-shared.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const SKILL_DIR = path.resolve(__dirname, '..');
 
 const HOME = process.env.HOME;
 const DATA_DIR = path.join(HOME, 'zylos/components/feishu');
@@ -116,6 +123,18 @@ if (isInteractive) {
 
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   console.log(`\n  Connection mode set to: ${mode}`);
+}
+
+// 5. lark-cli integration (idempotent — safe to re-run on reinstall)
+requireMinCoreVersion();
+console.log('\nIntegrating lark-cli...');
+try {
+  installLarkCliBinary();
+  installLarkCliSkills(SKILL_DIR);
+  syncCredentialsToLarkCli();
+} catch (err) {
+  console.error('lark-cli integration failed:', err.message);
+  process.exit(1);
 }
 
 // Note: PM2 service is started by Claude after this hook completes.
