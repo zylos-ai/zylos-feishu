@@ -75,16 +75,17 @@ This skill bundles **27 capability modules** under `references/`, each operating
 
 **Identity (`--as bot` vs `--as user`)**:
 - `--as bot` works out of the box for surfaces that operate on app/tenant-level resources (IM messaging, contacts, app-level docs, events). No extra login needed.
-- `--as user` is required for surfaces tied to a real user's data (calendar, mail-write, tasks, attendance, OKR, minutes, VC-agent). The user runs `lark-cli auth login --domain <name>` once. On auth failure lark-cli exits with a `<domain>_user_login_required` error envelope; the agent should detect this and notify the owner of the login command.
+- `--as user` is required for surfaces tied to a real user's data (calendar, mail-write, tasks, attendance, OKR, minutes, VC-agent). The user runs `lark-cli --profile feishu auth login --domain <name>` once. On auth failure lark-cli exits with a `<domain>_user_login_required` error envelope; the agent should detect this and notify the owner of the login command.
 
 **Permission fallback strategy**:
 When an operation fails due to missing scope (`missing_scope` / `unauthorized` error):
 1. **Retry with `--as user`** — bot identity has limited scopes; user identity often has broader access. If the bot call fails, retry the same command with `--as user` before giving up.
 2. **If user auth also lacks the scope**, initiate a re-authorization flow. Present the user with two options:
-   - **Minimum permissions** — only the scope(s) required for the current operation: `lark-cli auth login --scope "<missing_scope_1> <missing_scope_2>"`
-   - **Full permissions** — authorize all available scopes at once: `lark-cli auth login --domain all`
-3. Use `--no-wait --json` to get the device flow URL, generate a QR code (`lark-cli auth qrcode`), and send both to the user. After the user confirms, complete with `lark-cli auth login --device-code <code>`.
+   - **Minimum permissions** — only the scope(s) required for the current operation: `lark-cli --profile feishu auth login --scope "<missing_scope_1> <missing_scope_2>"`
+   - **Full permissions** — authorize all available scopes at once: `lark-cli --profile feishu auth login --domain all`
+3. Use `--no-wait --json` to get the device flow URL, generate a QR code (`lark-cli auth qrcode`), and send both to the user. After the user confirms, complete with `lark-cli --profile feishu auth login --device-code <code>`.
 4. Do NOT silently fail or tell the user "permission not available" — always offer the re-authorization path.
+5. **All `auth login` invocations MUST include `--profile feishu`** to ensure credentials land in the correct named profile, especially when zylos-lark is also installed on the same machine.
 
 ### Module Index
 
