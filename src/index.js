@@ -506,24 +506,25 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
   return getInMemoryContext(historyKey, currentMessageId);
 }
 
-// Resolve user_id to name (with TTL-based in-memory cache)
-async function resolveUserName(userId) {
-  if (!userId) return 'unknown';
+// Resolve user_id (or open_id fallback) to name (with TTL-based in-memory cache)
+async function resolveUserName(userId, openId) {
+  const id = userId || openId;
+  if (!id) return 'unknown';
 
   // Recognize bot's own messages (exact open_id or app_id match)
-  if (botOpenId && userId === botOpenId) return botAppName || 'bot';
-  if (botAppId && userId === botAppId) return botAppName || 'bot';
+  if (botOpenId && id === botOpenId) return botAppName || 'bot';
+  if (botAppId && id === botAppId) return botAppName || 'bot';
 
   const now = Date.now();
-  const cached = userCacheMemory.get(userId);
+  const cached = userCacheMemory.get(id);
   if (cached && cached.expireAt > now) {
     return cached.name;
   }
 
   try {
-    const result = await getUserInfo(userId);
+    const result = await getUserInfo(id);
     if (result.success && result.user?.name) {
-      userCacheMemory.set(userId, { name: result.user.name, expireAt: now + SENDER_NAME_TTL });
+      userCacheMemory.set(id, { name: result.user.name, expireAt: now + SENDER_NAME_TTL });
       _userCacheDirty = true;
       return result.user.name;
     }
@@ -537,12 +538,12 @@ async function resolveUserName(userId) {
     if (permErr) {
       handlePermissionError(permErr);
     } else {
-      console.log(`[feishu] Failed to lookup user ${userId}: ${err.message}`);
+      console.log(`[feishu] Failed to lookup user ${id}: ${err.message}`);
     }
     // If we have an expired cached name, return it as fallback
     if (cached) return cached.name;
   }
-  return userId;
+  return id;
 }
 
 // Decrypt message if encrypt_key is set (webhook mode only)
@@ -561,7 +562,7 @@ function decrypt(encrypt, encryptKey) {
 // Log message (mentions resolved to real names for readable context)
 // Also records to in-memory chat history for fast context building.
 async function logMessage(chatType, chatId, userId, openId, text, messageId, timestamp, mentions, threadId = null) {
-  const userName = await resolveUserName(userId);
+  const userName = await resolveUserName(userId, openId);
   const resolvedText = resolveMentions(text, mentions);
   const logEntry = {
     timestamp: timestamp || new Date().toISOString(),
@@ -1028,7 +1029,7 @@ function extractMessageContent(message) {
 
 // Bind owner (first private chat user)
 async function bindOwner(userId, openId) {
-  const userName = await resolveUserName(userId);
+  const userName = await resolveUserName(userId, openId);
   const previousOwner = config.owner;
   config.owner = {
     bound: true,
@@ -1168,7 +1169,7 @@ async function handleMessage(data) {
       quotedContent = await fetchQuotedMessage(parentId);
     }
 
-    const senderName = await resolveUserName(senderUserId);
+    const senderName = await resolveUserName(senderUserId, senderOpenId);
     const cleanText = resolveMentions(text, mentions);
     const threadRootId = threadId ? rootId : null;
     const rejectReply = (errMsg) => {
@@ -1295,7 +1296,7 @@ async function handleMessage(data) {
       quotedContent = await fetchQuotedMessage(parentId);
     }
 
-    const senderName = await resolveUserName(senderUserId);
+    const senderName = await resolveUserName(senderUserId, senderOpenId);
     const cleanText = resolveMentions(text, mentions);
     const cleanLogText = resolveMentions(logText, mentions);
     const threadRootId = threadId ? rootId : null;

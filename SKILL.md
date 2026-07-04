@@ -2,17 +2,17 @@
 name: feishu
 version: 0.3.0
 description: >-
-  Feishu (飞书, China domestic) communication channel. Supports WebSocket and webhook modes.
+  Feishu (飞书, China) communication channel. WebSocket and webhook modes.
   Use when: (1) replying to Feishu messages (DM or group @mentions),
   (2) sending proactive messages or media (images, files) to Feishu users or groups,
   (3) managing DM access control (dmPolicy: open/allowlist/owner, dmAllowFrom list),
   (4) managing group access control (groupPolicy, per-group allowFrom, smart/mention modes),
   (5) operating Feishu productivity surfaces via the bundled lark-cli — documents, sheets, slides,
-  multidim Base, calendar, tasks, mail, drive, wiki/whiteboard, OKR, approval, attendance,
-  video conferencing, minutes, meeting notes (纪要), Miaoda/Spark apps, native OpenAPI explorer
-  (see "Bundled Capability Modules" section in SKILL.md body — full module index under references/),
-  (6) configuring the bot (admin CLI, markdown card settings, connection mode, verification token),
-  (7) troubleshooting Feishu WebSocket connection or webhook issues.
+  multidim Base, calendar, tasks, mail, drive, wiki, OKR, approval, attendance,
+  video conferencing, minutes, Miaoda/Spark apps, native OpenAPI explorer
+  (see "Bundled Capability Modules" in SKILL.md body — full module index under references/),
+  (6) configuring the bot (admin CLI, markdown card settings, verification token),
+  (7) troubleshooting Feishu WebSocket or webhook issues.
   Config at ~/zylos/components/feishu/config.json. Service: pm2 zylos-feishu.
 type: communication
 
@@ -176,6 +176,8 @@ cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "feishu
 [MEDIA:file]/path/to/file.pdf
 EOF
 ```
+
+> ⚠️ `[MEDIA:...]` must be the only content in the message. Send text and media as separate calls.
 
 Direct send (bypasses C4 logging, for testing only):
 ```bash
