@@ -19,7 +19,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials, stopWatching } from './lib/config.js';
-import { downloadImage, downloadFile, sendMessage, replyToMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
+import { downloadImage, downloadFile, sendMessage, replyToMessage, extractPermissionError, addReaction, removeReaction, listMessages, getInteractiveCardContent, getMergeForwardMessages } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 import { listChatMembers } from './lib/chat.js';
 
@@ -997,7 +997,8 @@ function extractPostText(paragraphs, messageId) {
 
 // Extract content from Feishu message
 // Returns imageKeys as array (all images from post messages, or single image)
-function extractMessageContent(message) {
+// `depth` guards against nested merge_forward recursion.
+async function extractMessageContent(message, depth = 0) {
   const msgType = message.message_type;
   let content;
   try {
@@ -1022,6 +1023,73 @@ function extractMessageContent(message) {
       return { text: '', imageKeys: content.image_key ? [content.image_key] : [], fileKey: null, fileName: null };
     case 'file':
       return { text: '', imageKeys: [], fileKey: content.file_key, fileName: content.file_name || 'unknown' };
+    case 'interactive': {
+      // Handle interactive/card messages with card-json-v2 breaking change
+      // Fetch original card content using card_msg_content_type=user_card_content parameter
+      const cardResult = await getInteractiveCardContent(message.message_id);
+
+      if (!cardResult.success) {
+        console.log(`[feishu] Failed to fetch card content: ${cardResult.message}`);
+        return { text: '[interactive card - content fetch failed]', imageKeys: [], fileKey: null, fileName: null };
+      }
+
+      const cardContent = cardResult.content;
+      const textParts = [];
+      const imageKeys = [];
+
+      // Walk card body elements (one level of nesting) collecting ALL markdown/text
+      // blocks and image keys — cards often have multiple text elements, so don't
+      // stop at the first (that would drop most of a multi-block card's content).
+      const collect = (elements) => {
+        if (!Array.isArray(elements)) return;
+        for (const element of elements) {
+          if ((element.tag === 'markdown' || element.tag === 'text') && element.content) {
+            textParts.push(element.content);
+          } else if (element.tag === 'img' && element.image_key) {
+            imageKeys.push(element.image_key);
+          }
+          if (Array.isArray(element.elements)) collect(element.elements);
+        }
+      };
+      collect(cardContent.body?.elements);
+
+      const extractedText = textParts.join('\n');
+      return { text: extractedText || '[interactive card]', imageKeys, fileKey: null, fileName: null };
+    }
+    case 'merge_forward': {
+      // Merged-forward (合并转发): the get-message API returns each forwarded
+      // child message. Recurse over the children so their text/images/cards are
+      // extracted instead of collapsing to a bare "[merge_forward message]".
+      // NOTE: child image/file resources download via the PARENT forward id, so
+      // we keep the returned imageKeys/fileKey and DO NOT rewrite message_id —
+      // the caller downloads with message.message_id (the forward), which works.
+      if (depth >= 3) {
+        return { text: '[合并转发]', imageKeys: [], fileKey: null, fileName: null };
+      }
+      const fwd = await getMergeForwardMessages(message.message_id);
+      if (!fwd.success || !fwd.children?.length) {
+        return { text: '[合并转发]', imageKeys: [], fileKey: null, fileName: null };
+      }
+
+      const textParts = [];
+      const imageKeys = [];
+      let fileKey = null;
+      let fileName = null;
+      for (const child of fwd.children) {
+        const sub = await extractMessageContent(child, depth + 1);
+        if (sub.text) textParts.push(sub.text);
+        if (sub.imageKeys?.length) imageKeys.push(...sub.imageKeys);
+        if (!fileKey && sub.fileKey) { fileKey = sub.fileKey; fileName = sub.fileName; }
+      }
+
+      const joined = textParts.filter(Boolean).join('\n');
+      return {
+        text: joined ? `[合并转发]\n${joined}` : '[合并转发]',
+        imageKeys,
+        fileKey,
+        fileName,
+      };
+    }
     default:
       return { text: `[${msgType} message]`, imageKeys: [], fileKey: null, fileName: null };
   }
@@ -1116,7 +1184,7 @@ async function handleMessage(data) {
   // Unified dedup check (both websocket and webhook modes)
   if (isDuplicate(messageId)) return;
 
-  const { text, imageKeys, fileKey, fileName } = extractMessageContent(message);
+  const { text, imageKeys, fileKey, fileName } = await extractMessageContent(message);
   console.log(`[feishu] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
 
   // Build log text with file/image metadata
