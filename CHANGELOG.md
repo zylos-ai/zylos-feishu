@@ -13,10 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   below-target or missing installs are brought to 1.0.69, and sub-skill docs are
   re-fetched to the matching v1.0.69 tag via the version marker.
 - SKILL.md: added a prominent note to prefer `--as user` identity for lark-cli
-  content operations (docs, wiki/knowledge bases, drive, sheets, Base) — bot
-  identity is not in any knowledge space and lacks drive scopes, so bot-identity
-  content queries silently find nothing; bot identity remains appropriate for
-  IM messaging operations.
+  content operations (docs, wiki/knowledge bases, drive, sheets, Base) — user-owned
+  content generally requires user identity, while bot identity only sees resources
+  accessible to the bot or its app. The target sub-skill's identity rules take
+  precedence (Wiki/Drive/Base define legitimate bot paths); bot identity remains
+  appropriate for IM messaging operations.
 
 ## [0.3.1] - 2026-07-04
 
