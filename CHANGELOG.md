@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-07-14
+
+### Changed
+- Bundled lark-cli install target bumped from 1.0.63 to 1.0.69. Minimum-version
+  semantics unchanged: installs at or above the target are left untouched,
+  below-target or missing installs are brought to 1.0.69, and sub-skill docs are
+  re-fetched to the matching v1.0.69 tag via the version marker.
+- SKILL.md: added a prominent note to prefer `--as user` identity for lark-cli
+  content operations (docs, wiki/knowledge bases, drive, sheets, Base) — user-owned
+  content generally requires user identity, while bot identity only sees resources
+  accessible to the bot or its app. The target sub-skill's identity rules take
+  precedence (Wiki/Drive/Base define legitimate bot paths); bot identity remains
+  appropriate for IM messaging operations.
+
 ## [0.3.1] - 2026-07-04
 
 ### Fixed

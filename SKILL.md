@@ -1,6 +1,6 @@
 ---
 name: feishu
-version: 0.3.1
+version: 0.3.2
 description: >-
   Feishu (飞书, China) communication channel. WebSocket and webhook modes.
   Use when: (1) replying to Feishu messages (DM or group @mentions),
@@ -74,8 +74,11 @@ This skill bundles **27 capability modules** under `references/`, each operating
 - App credentials in lark-cli's keychain (`~/.lark-cli/config.json` + AES-256-GCM encrypted file under `~/.local/share/lark-cli/`); pushed from `~/zylos/.env` automatically.
 
 **Identity (`--as bot` vs `--as user`)**:
-- `--as bot` works out of the box for surfaces that operate on app/tenant-level resources (IM messaging, contacts, app-level docs, events). No extra login needed.
-- `--as user` is required for surfaces tied to a real user's data (calendar, mail-write, tasks, attendance, OKR, minutes, VC-agent). The user runs `lark-cli --profile feishu auth login --domain <name>` once. On auth failure lark-cli exits with a `<domain>_user_login_required` error envelope; the agent should detect this and notify the owner of the login command.
+
+> ⚠️ **Prefer user identity for content operations.** When querying or editing documents, wiki / knowledge bases, drive files, sheets, or Base via lark-cli, default to `--as user` (OAuth-authorized; the refresh token rotates automatically, with expiry defined by the auth response). Rationale: user-owned content generally requires user identity — the bot identity only sees resources accessible to the bot or its app (bot scopes are granted in the developer console), so bot-identity queries against a user's content typically return empty results. This is a default, not a blanket rule: sub-skills define legitimate bot paths (e.g. Wiki app-owned spaces and bot node creation, Drive version operations, Base bot create/copy and single bot retry), and the target sub-skill's identity guidance takes precedence over this note. Bot identity remains appropriate for IM messaging operations.
+
+- `--as bot` works out of the box for app/tenant-level operations (IM messaging, contacts, events). No extra login needed.
+- `--as user` is the default for content operations (docs, wiki, drive, sheets, Base — see note above) and is required for surfaces tied to a real user's data (calendar, mail-write, tasks, attendance, OKR, minutes, VC-agent). The user runs `lark-cli --profile feishu auth login --domain <name>` once. On auth failure lark-cli exits with a `<domain>_user_login_required` error envelope; the agent should detect this and notify the owner of the login command.
 
 **Permission fallback strategy**:
 When an operation fails due to missing scope (`missing_scope` / `unauthorized` error):
