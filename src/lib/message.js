@@ -546,3 +546,84 @@ export async function sendFile(receiveId, fileKey, receiveIdType = 'chat_id') {
     return { success: false, message: err.message };
   }
 }
+
+/**
+ * Get interactive/card message with original content
+ * Uses card_msg_content_type=user_card_content to fetch the actual card JSON
+ * (fixes card-json-v2 breaking change where old endpoint returned "请升级至最新版本客户端" placeholder)
+ */
+export async function getInteractiveCardContent(messageId) {
+  try {
+    const token = await getAccessToken();
+    const proxy = getProxyConfig();
+
+    const url = `https://open.feishu.cn/open-apis/im/v1/messages/${messageId}?card_msg_content_type=user_card_content`;
+
+    const res = await axios({
+      method: 'GET',
+      url,
+      headers: { 'Authorization': 'Bearer ' + token },
+      timeout: 30000,
+      proxy,
+    });
+
+    if (res.data?.code === 0 && res.data?.data?.items?.[0]) {
+      const item = res.data.data.items[0];
+      let cardContent = {};
+      try {
+        cardContent = JSON.parse(item.body?.content || '{}');
+      } catch {
+        console.log(`[feishu] Failed to parse card content for ${messageId}`);
+      }
+      return {
+        success: true,
+        content: cardContent,
+        mentions: item.mentions || [],
+      };
+    } else {
+      return {
+        success: false,
+        message: `API error: ${res.data?.msg || 'unknown'}`,
+        code: res.data?.code,
+      };
+    }
+  } catch (err) {
+    console.error(`[feishu] getInteractiveCardContent error for ${messageId}: ${err.message}`);
+    return {
+      success: false,
+      message: err.message,
+    };
+  }
+}
+
+/**
+ * Fetch the child messages contained in a merge_forward (合并转发) message.
+ *
+ * The get-message API on a merge_forward returns the forward stub as the first
+ * item and each forwarded child as a subsequent item tagged with
+ * upper_message_id === the forward's message_id. Child image/file resources are
+ * downloadable via the PARENT (forward) message_id — the child's own message_id
+ * returns 400 — so callers must keep using the parent id for downloadImage.
+ */
+export async function getMergeForwardMessages(messageId) {
+  const client = getClient();
+  try {
+    const res = await client.im.message.get({ path: { message_id: messageId } });
+    if (res.code === 0) {
+      const items = res.data?.items || [];
+      const children = items
+        .filter(it => it.message_id !== messageId)
+        .map(it => ({
+          message_id: it.message_id,
+          message_type: it.msg_type,
+          content: it.body?.content || '{}',
+          sender: it.sender?.id,
+        }));
+      return { success: true, children };
+    }
+    return { success: false, message: `Failed to get merge_forward content: ${res.msg}`, code: res.code };
+  } catch (err) {
+    console.error(`[feishu] getMergeForwardMessages error for ${messageId}: ${err.message}`);
+    return { success: false, message: err.message };
+  }
+}
