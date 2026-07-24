@@ -18,6 +18,7 @@ import path from 'path';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig, DATA_DIR } from '../src/lib/config.js';
+import { chooseReplyTarget } from '../src/lib/reply-target.js';
 import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
 
 const TYPING_DIR = path.join(DATA_DIR, 'typing');
@@ -180,13 +181,12 @@ const CARD_MAX_LENGTH = 4000;
  * Falls back to plain text on card failure.
  */
 async function sendCardChunk(chunk, isFirstChunk) {
-  const { chatId, root, parent, msg, type } = parsedEndpoint;
-  const isDM = type === 'p2p';
-  const isGroup = type === 'group';
+  const { chatId } = parsedEndpoint;
+  // p2p DMs never reply-to (invisible in the 1:1 view); only groups reply.
+  const replyTarget = chooseReplyTarget(parsedEndpoint, { isFirstChunk });
   let result;
 
-  if (root) {
-    const replyTarget = parent || root;
+  if (replyTarget) {
     try {
       result = await replyMarkdownCard(replyTarget, chunk);
     } catch (err) {
@@ -196,18 +196,6 @@ async function sendCardChunk(chunk, isFirstChunk) {
     if (!result.success) {
       result = await sendMarkdownCard(chatId, chunk);
     }
-  } else if (isFirstChunk && msg && isGroup) {
-    try {
-      result = await replyMarkdownCard(msg, chunk);
-    } catch (err) {
-      console.log('[feishu] Card reply threw, falling back:', err.message);
-      result = { success: false };
-    }
-    if (!result.success) {
-      result = await sendMarkdownCard(chatId, chunk);
-    }
-  } else if (isDM) {
-    result = await sendMarkdownCard(chatId, chunk);
   } else {
     result = await sendMarkdownCard(chatId, chunk);
   }
@@ -271,13 +259,13 @@ async function sendText(endpoint, text) {
  * Send a single chunk as plain text with routing logic.
  */
 async function sendPlainTextChunk(endpoint, chunk, isFirstChunk) {
-  const { chatId, root, parent, msg, type } = parsedEndpoint;
+  const { chatId, type } = parsedEndpoint;
   const isDM = type === 'p2p';
-  const isGroup = type === 'group';
+  // p2p DMs never reply-to (invisible in the 1:1 view); only groups reply.
+  const replyTarget = chooseReplyTarget(parsedEndpoint, { isFirstChunk });
   let result;
 
-  if (root) {
-    const replyTarget = parent || root;
+  if (replyTarget) {
     try {
       result = await replyToMessage(replyTarget, chunk);
     } catch (err) {
@@ -289,17 +277,6 @@ async function sendPlainTextChunk(endpoint, chunk, isFirstChunk) {
       result = isDM
         ? await sendMessage(chatId, chunk, 'chat_id', 'text')
         : await sendToGroup(endpoint, chunk);
-    }
-  } else if (isFirstChunk && msg && isGroup) {
-    try {
-      result = await replyToMessage(msg, chunk);
-    } catch (err) {
-      console.log('[feishu] Reply threw, falling back to sendToGroup:', err.message);
-      result = { success: false };
-    }
-    if (!result.success) {
-      console.log('[feishu] Reply failed, falling back to sendToGroup:', result.message);
-      result = await sendToGroup(endpoint, chunk);
     }
   } else if (isDM) {
     result = await sendMessage(chatId, chunk, 'chat_id', 'text');
@@ -316,8 +293,9 @@ async function sendPlainTextChunk(endpoint, chunk, isFirstChunk) {
  */
 async function sendMedia(type, filePath) {
   const trimmedPath = filePath.trim();
-  const { chatId, root, parent, msg, type: chatType } = parsedEndpoint;
-  const replyTarget = root ? (parent || root) : (msg && chatType === 'group' ? msg : null);
+  const { chatId, root, parent } = parsedEndpoint;
+  // p2p DMs never reply-to (invisible in the 1:1 view); only groups reply.
+  const replyTarget = chooseReplyTarget(parsedEndpoint);
 
   if (type === 'image') {
     const uploadResult = await uploadImage(trimmedPath);
