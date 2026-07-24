@@ -22,6 +22,7 @@ import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials, stopWatch
 import { downloadImage, downloadFile, sendMessage, replyToMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 import { listChatMembers } from './lib/chat.js';
+import { sendThreadAware } from './lib/reply-send.js';
 
 // C4 receive interface path
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
@@ -1069,16 +1070,16 @@ function isDmAllowed(userId, openId) {
     (normalizedOpenId && allowFrom.includes(normalizedOpenId));
 }
 
-async function sendThreadAwareMessage(chatId, text, { threadId, rootId, parentId, messageId } = {}) {
-  const replyTarget = parentId || rootId || messageId;
-  if ((threadId || rootId) && replyTarget) {
-    try {
-      const replyResult = await replyToMessage(replyTarget, text);
-      if (replyResult.success) return true;
-    } catch {}
-  }
-  const result = await sendMessage(chatId, text);
-  return !!result?.success;
+// Reply-to (threaded/quoted) sends only make sense in group chats. In a p2p DM
+// they silently drop (Feishu returns code:0 but the reply is not surfaced in the
+// main view), so this must be chat-type-aware — hence chatType is required.
+// Delegates the target decision to chooseReplyTarget (via sendThreadAware) so it
+// stays consistent with the outbound send routing.
+async function sendThreadAwareMessage(chatId, text, { chatType, rootId, parentId, messageId } = {}) {
+  return sendThreadAware(
+    { chatId, text, chatType, rootId, parentId, messageId },
+    { replyToMessage, sendMessage },
+  );
 }
 
 /**
@@ -1174,7 +1175,7 @@ async function handleMessage(data) {
     const threadRootId = threadId ? rootId : null;
     const rejectReply = (errMsg) => {
       removeTypingIndicator(messageId);
-      sendThreadAwareMessage(chatId, errMsg, { threadId, rootId, parentId, messageId })
+      sendThreadAwareMessage(chatId, errMsg, { chatType, rootId, parentId, messageId })
         .catch(e => console.error('[feishu] reject reply failed:', e.message));
     };
 
@@ -1302,7 +1303,7 @@ async function handleMessage(data) {
     const threadRootId = threadId ? rootId : null;
     const groupRejectReply = (errMsg) => {
       removeTypingIndicator(messageId);
-      sendThreadAwareMessage(chatId, errMsg, { threadId, rootId, parentId, messageId })
+      sendThreadAwareMessage(chatId, errMsg, { chatType, rootId, parentId, messageId })
         .catch(e => console.error('[feishu] reject reply failed:', e.message));
     };
 
@@ -1329,7 +1330,7 @@ async function handleMessage(data) {
         sendToC4('feishu', endpoint, msg, groupRejectReply);
       } else {
         removeTypingIndicator(messageId);
-        sendThreadAwareMessage(chatId, 'Image download failed. Please resend the image.', { threadId, rootId, parentId, messageId })
+        sendThreadAwareMessage(chatId, 'Image download failed. Please resend the image.', { chatType, rootId, parentId, messageId })
           .catch(e => console.error('[feishu] image error reply failed:', e.message));
       }
       return;
@@ -1355,7 +1356,7 @@ async function handleMessage(data) {
         sendToC4('feishu', endpoint, msg, groupRejectReply);
       } else {
         removeTypingIndicator(messageId);
-        sendThreadAwareMessage(chatId, 'File download failed. Please resend the file.', { threadId, rootId, parentId, messageId })
+        sendThreadAwareMessage(chatId, 'File download failed. Please resend the file.', { chatType, rootId, parentId, messageId })
           .catch(e => console.error('[feishu] file error reply failed:', e.message));
       }
       return;
