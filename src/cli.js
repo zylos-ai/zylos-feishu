@@ -8,7 +8,7 @@ import path from 'path';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { testAuth } from './lib/client.js';
-import { sendToGroup, sendToUser, listMessages, uploadImage, sendImage, uploadFile, sendFile, downloadImage, downloadFile } from './lib/message.js';
+import { sendToGroup, sendToUser, listMessages } from './lib/message.js';
 import { getDocument, getDocumentInfo, getWikiNode, getSpreadsheet, getSheetValues, writeSheetValues, copySheet, addSheet } from './lib/document.js';
 import { listEvents } from './lib/calendar.js';
 import { listChats, searchChats, listChatMembers } from './lib/chat.js';
@@ -16,6 +16,28 @@ import { getUserId, getUserInfo } from './lib/contact.js';
 
 const args = process.argv.slice(2);
 const command = args[0];
+
+/**
+ * Manual image/file send & download have been consolidated onto the system
+ * `lark-cli`. Print guidance pointing at the equivalent lark-cli command and
+ * exit non-zero (the requested operation was intentionally NOT performed).
+ *
+ * Note: the C4 outbound media path (scripts/send.js) and the resource
+ * downloader (scripts/download.js) are unaffected — they now use lark-cli
+ * with an automatic direct-API fallback.
+ *
+ * @param {string} larkCliExample  the recommended lark-cli invocation
+ */
+function printDeprecated(larkCliExample) {
+  console.error(
+    `This command has been removed. Manual image/file operations now use the ` +
+    `system lark-cli directly:\n\n    ${larkCliExample}\n\n` +
+    `(Automated outbound media and resource downloads are handled by ` +
+    `scripts/send.js and scripts/download.js, which use lark-cli with a ` +
+    `direct-API fallback.)`
+  );
+  process.exit(1);
+}
 
 function printUsage() {
   console.log(`
@@ -28,10 +50,6 @@ Commands:
 
   send-group <chat_id> <msg>     Send message to a group
   send-user <user_id> <msg>      Send message to a user
-  send-image <chat_id> <path>    Send image to a chat
-  send-file <chat_id> <path>     Send file to a chat
-  download-image <msg_id> <key> <path>  Download image from message
-  download-file <msg_id> <key> <path>   Download file from message
   messages <chat_id> [options]   List messages in a chat
                                  --limit N    Max messages (default: 50)
                                  --today      Only today's messages
@@ -54,6 +72,10 @@ Commands:
 
   user <email_or_mobile>         Get user ID by email or mobile
   user-info <id>                 Get user info by user_id or open_id (ou_xxx)
+
+Image/file send & download have moved to the system lark-cli:
+  Send:     lark-cli --profile feishu im +messages-send --as bot --chat-id <chat_id> --image|--file <path>
+  Download: lark-cli --profile feishu im +messages-resources-download --as bot --message-id <msg_id> --file-key <key> --type image|file --output <path>
 
 Examples:
   feishu-cli test
@@ -95,45 +117,19 @@ async function main() {
         break;
 
       case 'send-image':
-        if (args.length < 3) {
-          console.error('Usage: feishu-cli send-image <chat_id> <image_path>');
-          process.exit(1);
-        }
-        const uploadImgResult = await uploadImage(args[2]);
-        if (!uploadImgResult.success) {
-          console.error(`Failed to upload image: ${uploadImgResult.message}`);
-          process.exit(1);
-        }
-        result = await sendImage(args[1], uploadImgResult.imageKey);
+        printDeprecated('lark-cli --profile feishu im +messages-send --as bot --chat-id <chat_id> --image <image_path>');
         break;
 
       case 'send-file':
-        if (args.length < 3) {
-          console.error('Usage: feishu-cli send-file <chat_id> <file_path>');
-          process.exit(1);
-        }
-        const uploadFileResult = await uploadFile(args[2]);
-        if (!uploadFileResult.success) {
-          console.error(`Failed to upload file: ${uploadFileResult.message}`);
-          process.exit(1);
-        }
-        result = await sendFile(args[1], uploadFileResult.fileKey);
+        printDeprecated('lark-cli --profile feishu im +messages-send --as bot --chat-id <chat_id> --file <file_path>');
         break;
 
       case 'download-image':
-        if (args.length < 4) {
-          console.error('Usage: feishu-cli download-image <message_id> <image_key> <save_path>');
-          process.exit(1);
-        }
-        result = await downloadImage(args[1], args[2], args[3]);
+        printDeprecated('lark-cli --profile feishu im +messages-resources-download --as bot --message-id <message_id> --file-key <image_key> --type image --output <save_path>');
         break;
 
       case 'download-file':
-        if (args.length < 4) {
-          console.error('Usage: feishu-cli download-file <message_id> <file_key> <save_path>');
-          process.exit(1);
-        }
-        result = await downloadFile(args[1], args[2], args[3]);
+        printDeprecated('lark-cli --profile feishu im +messages-resources-download --as bot --message-id <message_id> --file-key <file_key> --type file --output <save_path>');
         break;
 
       case 'messages':
