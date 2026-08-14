@@ -9,6 +9,7 @@ dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { testAuth } from './lib/client.js';
 import { sendToGroup, sendToUser, listMessages } from './lib/message.js';
+import { cliSendMedia, cliDownloadMedia } from './lib/cli-media.js';
 import { getDocument, getDocumentInfo, getWikiNode, getSpreadsheet, getSheetValues, writeSheetValues, copySheet, addSheet } from './lib/document.js';
 import { listEvents } from './lib/calendar.js';
 import { listChats, searchChats, listChatMembers } from './lib/chat.js';
@@ -18,25 +19,21 @@ const args = process.argv.slice(2);
 const command = args[0];
 
 /**
- * Manual image/file send & download have been consolidated onto the system
- * `lark-cli`. Print guidance pointing at the equivalent lark-cli command and
- * exit non-zero (the requested operation was intentionally NOT performed).
+ * The manual image/file send & download commands are DEPRECATED in favor of
+ * the system `lark-cli`, but they remain fully functional: they now route
+ * through the same lark-cli bridge helpers with an automatic direct-API
+ * fallback, so nothing is lost. This prints a stderr nudge only — the caller
+ * still performs the operation.
  *
- * Note: the C4 outbound media path (scripts/send.js) and the resource
- * downloader (scripts/download.js) are unaffected — they now use lark-cli
- * with an automatic direct-API fallback.
- *
- * @param {string} larkCliExample  the recommended lark-cli invocation
+ * @param {string} op            the deprecated subcommand name
+ * @param {string} larkCliExample the recommended lark-cli equivalent
  */
-function printDeprecated(larkCliExample) {
-  console.error(
-    `This command has been removed. Manual image/file operations now use the ` +
-    `system lark-cli directly:\n\n    ${larkCliExample}\n\n` +
-    `(Automated outbound media and resource downloads are handled by ` +
-    `scripts/send.js and scripts/download.js, which use lark-cli with a ` +
-    `direct-API fallback.)`
+function warnDeprecated(op, larkCliExample) {
+  console.warn(
+    `[deprecated] feishu-cli ${op} is deprecated; prefer the system lark-cli:\n` +
+    `    ${larkCliExample}\n` +
+    `Running via lark-cli with direct-API fallback...`
   );
-  process.exit(1);
 }
 
 function printUsage() {
@@ -50,6 +47,10 @@ Commands:
 
   send-group <chat_id> <msg>     Send message to a group
   send-user <user_id> <msg>      Send message to a user
+  send-image <chat_id> <path>    Send image (deprecated: prefer lark-cli; uses lark-cli + direct-API fallback)
+  send-file <chat_id> <path>     Send file (deprecated: prefer lark-cli; uses lark-cli + direct-API fallback)
+  download-image <msg_id> <key> <path>  Download image (deprecated: prefer lark-cli; lark-cli + fallback)
+  download-file <msg_id> <key> <path>   Download file (deprecated: prefer lark-cli; lark-cli + fallback)
   messages <chat_id> [options]   List messages in a chat
                                  --limit N    Max messages (default: 50)
                                  --today      Only today's messages
@@ -73,7 +74,9 @@ Commands:
   user <email_or_mobile>         Get user ID by email or mobile
   user-info <id>                 Get user info by user_id or open_id (ou_xxx)
 
-Image/file send & download have moved to the system lark-cli:
+The send-image/send-file/download-image/download-file commands are DEPRECATED
+but still functional (they route through lark-cli with a direct-API fallback).
+Prefer the system lark-cli directly:
   Send:     lark-cli --profile feishu im +messages-send --as bot --chat-id <chat_id> --image|--file <path>
   Download: lark-cli --profile feishu im +messages-resources-download --as bot --message-id <msg_id> --file-key <key> --type image|file --output <path>
 
@@ -116,21 +119,65 @@ async function main() {
         result = await sendToUser(args[1], args[2]);
         break;
 
-      case 'send-image':
-        printDeprecated('lark-cli --profile feishu im +messages-send --as bot --chat-id <chat_id> --image <image_path>');
-        break;
+      case 'send-image': {
+        if (args.length < 3) {
+          console.error('Usage: feishu-cli send-image <chat_id> <image_path>');
+          process.exit(1);
+        }
+        warnDeprecated('send-image', 'lark-cli --profile feishu im +messages-send --as bot --chat-id <chat_id> --image <image_path>');
+        const r = await cliSendMedia({ chatId: args[1], type: 'image', path: args[2] });
+        if (r && r.success) {
+          console.log(`Image sent via ${r.via}${r.messageId ? ` (message_id: ${r.messageId})` : ''}`);
+          process.exit(0);
+        }
+        console.error(`Error: ${r?.message || 'failed to send image'}`);
+        process.exit(1);
+      }
 
-      case 'send-file':
-        printDeprecated('lark-cli --profile feishu im +messages-send --as bot --chat-id <chat_id> --file <file_path>');
-        break;
+      case 'send-file': {
+        if (args.length < 3) {
+          console.error('Usage: feishu-cli send-file <chat_id> <file_path>');
+          process.exit(1);
+        }
+        warnDeprecated('send-file', 'lark-cli --profile feishu im +messages-send --as bot --chat-id <chat_id> --file <file_path>');
+        const r = await cliSendMedia({ chatId: args[1], type: 'file', path: args[2] });
+        if (r && r.success) {
+          console.log(`File sent via ${r.via}${r.messageId ? ` (message_id: ${r.messageId})` : ''}`);
+          process.exit(0);
+        }
+        console.error(`Error: ${r?.message || 'failed to send file'}`);
+        process.exit(1);
+      }
 
-      case 'download-image':
-        printDeprecated('lark-cli --profile feishu im +messages-resources-download --as bot --message-id <message_id> --file-key <image_key> --type image --output <save_path>');
-        break;
+      case 'download-image': {
+        if (args.length < 4) {
+          console.error('Usage: feishu-cli download-image <message_id> <image_key> <save_path>');
+          process.exit(1);
+        }
+        warnDeprecated('download-image', 'lark-cli --profile feishu im +messages-resources-download --as bot --message-id <message_id> --file-key <image_key> --type image --output <save_path>');
+        const r = await cliDownloadMedia({ messageId: args[1], fileKey: args[2], type: 'image', outPath: args[3] });
+        if (r && r.success) {
+          console.log(r.path || 'Image downloaded successfully');
+          process.exit(0);
+        }
+        console.error(`Error: ${r?.message || 'failed to download image'}`);
+        process.exit(1);
+      }
 
-      case 'download-file':
-        printDeprecated('lark-cli --profile feishu im +messages-resources-download --as bot --message-id <message_id> --file-key <file_key> --type file --output <save_path>');
-        break;
+      case 'download-file': {
+        if (args.length < 4) {
+          console.error('Usage: feishu-cli download-file <message_id> <file_key> <save_path>');
+          process.exit(1);
+        }
+        warnDeprecated('download-file', 'lark-cli --profile feishu im +messages-resources-download --as bot --message-id <message_id> --file-key <file_key> --type file --output <save_path>');
+        const r = await cliDownloadMedia({ messageId: args[1], fileKey: args[2], type: 'file', outPath: args[3] });
+        if (r && r.success) {
+          console.log(r.path || 'File downloaded successfully');
+          process.exit(0);
+        }
+        console.error(`Error: ${r?.message || 'failed to download file'}`);
+        process.exit(1);
+      }
 
       case 'messages':
         if (args.length < 2) {

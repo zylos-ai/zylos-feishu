@@ -12,6 +12,10 @@ import {
   directSendMedia,
   directReplyMedia,
 } from '../src/lib/media-send.js';
+import {
+  cliSendMedia,
+  cliDownloadMedia,
+} from '../src/lib/cli-media.js';
 
 /**
  * A recording runLarkCli seam. Returns a canned stdout, or throws when
@@ -334,5 +338,107 @@ test('directSendMedia throws when upload fails', async () => {
       uploadImage: async () => ({ success: false, message: 'upload down' }),
     }),
     /Failed to upload image: upload down/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Manual CLI commands (cli-media.js) — deprecated but FUNCTIONAL.
+// Regression guard: these must actually perform the op via lark-cli with a
+// direct-API fallback, NOT revert to an exit-1 no-op.
+// ---------------------------------------------------------------------------
+
+test('cliSendMedia(image) invokes lark-cli im +messages-send --as bot with correct argv', async () => {
+  const { calls, run } = fakeRunner();
+  let fbCalled = false;
+  const res = await cliSendMedia(
+    { chatId: 'oc_x', type: 'image', path: '/tmp/a.png' },
+    { run, directSend: async () => { fbCalled = true; return { success: true }; } },
+  );
+  assert.equal(fbCalled, false);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args, [
+    'im', '+messages-send', '--as', 'bot',
+    '--chat-id', 'oc_x',
+    '--image', 'a.png',
+  ]);
+  assert.equal(res.success, true);
+});
+
+test('cliSendMedia(file) invokes lark-cli with --file and succeeds', async () => {
+  const { calls, run } = fakeRunner();
+  const res = await cliSendMedia(
+    { chatId: 'oc_x', type: 'file', path: '/tmp/report.pdf' },
+    { run },
+  );
+  assert.deepEqual(calls[0].args, [
+    'im', '+messages-send', '--as', 'bot',
+    '--chat-id', 'oc_x',
+    '--file', 'report.pdf',
+  ]);
+  assert.equal(res.success, true);
+});
+
+test('cliSendMedia falls back to direct API when lark-cli fails, op STILL succeeds (order lark-cli→fallback)', async () => {
+  const order = [];
+  const throwing = (args) => { order.push('lark-cli'); throw new Error('lark-cli exit 1'); };
+  const directSend = async ({ chatId, type, path }) => {
+    order.push('fallback');
+    // Discriminating: the fallback MUST actually be invoked (would fail the
+    // old exit-1 no-op, which never called anything).
+    return { success: true, via: 'direct-api', messageId: 'om_direct', _target: { chatId, type, path } };
+  };
+  const res = await cliSendMedia(
+    { chatId: 'oc_x', type: 'image', path: '/tmp/a.png' },
+    { run: throwing, directSend },
+  );
+  assert.deepEqual(order, ['lark-cli', 'fallback'], 'lark-cli tried first, then fallback');
+  assert.equal(res.success, true, 'operation still succeeds via fallback → CLI exits 0');
+  assert.equal(res.via, 'direct-api');
+  assert.deepEqual(res._target, { chatId: 'oc_x', type: 'image', path: '/tmp/a.png' });
+});
+
+test('cliDownloadMedia(image) routes to +messages-resources-download with --as bot', async () => {
+  const { calls, run } = fakeRunner({ stdout: '{"ok":true}' });
+  let fbCalled = false;
+  const res = await cliDownloadMedia(
+    { messageId: 'om_1', fileKey: 'img_x', type: 'image', outPath: '/save/pic.png' },
+    { run, downloadImage: async () => { fbCalled = true; return { success: true, path: '/save/pic.png' }; } },
+  );
+  assert.equal(fbCalled, false);
+  assert.deepEqual(calls[0].args, [
+    'im', '+messages-resources-download', '--as', 'bot',
+    '--message-id', 'om_1',
+    '--file-key', 'img_x',
+    '--type', 'image',
+    '--output', 'pic.png',
+  ]);
+  assert.equal(res.success, true);
+  assert.equal(res.path, '/save/pic.png');
+});
+
+test('cliDownloadMedia(file) falls back to direct downloadFile on lark-cli failure and STILL delivers', async () => {
+  const order = [];
+  const throwing = () => { order.push('lark-cli'); throw new Error('lark down'); };
+  const downloadFile = async (messageId, fileKey, outPath) => {
+    order.push('fallback');
+    return { success: true, path: outPath, message: 'File downloaded successfully' };
+  };
+  const res = await cliDownloadMedia(
+    { messageId: 'om_1', fileKey: 'file_x', type: 'file', outPath: '/save/doc.pdf' },
+    { run: throwing, downloadFile },
+  );
+  assert.deepEqual(order, ['lark-cli', 'fallback']);
+  assert.equal(res.success, true);
+  assert.equal(res.path, '/save/doc.pdf');
+});
+
+test('cliSendMedia surfaces hard failure (both paths fail) so CLI can exit non-zero', async () => {
+  const throwing = () => { throw new Error('lark down'); };
+  await assert.rejects(
+    () => cliSendMedia(
+      { chatId: 'oc_x', type: 'image', path: '/tmp/a.png' },
+      { run: throwing, directSend: async () => { throw new Error('direct also down'); } },
+    ),
+    /direct also down/,
   );
 });
