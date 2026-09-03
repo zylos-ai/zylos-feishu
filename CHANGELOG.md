@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- C4 outbound video now accepts `[MEDIA:video]/path/to/video.mp4`, uploads the
+  file with Feishu's `mp4` file type, and sends or replies with message type
+  `media` so the video is inline-playable. `.mp4` files sent through
+  `[MEDIA:file]` use the same video behavior; other files remain `file`
+  messages. Existing p2p, group, and topic-thread routing is preserved.
+
 ## [0.3.6] - 2026-08-10
 
 ### Fixed

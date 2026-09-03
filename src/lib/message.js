@@ -522,19 +522,30 @@ export function extractPermissionError(err) {
 }
 
 /**
- * Send file message
+ * Build the payload for a file-key-backed message. MP4 video uses Feishu's
+ * `media` message type; ordinary attachments use `file`.
  */
-export async function sendFile(receiveId, fileKey, receiveIdType = 'chat_id') {
+export function buildFileMessagePayload(receiveId, fileKey, msgType = 'file') {
+  if (msgType !== 'file' && msgType !== 'media') {
+    throw new Error(`Unsupported file message type: ${msgType}`);
+  }
+  return {
+    receive_id: receiveId,
+    msg_type: msgType,
+    content: JSON.stringify({ file_key: fileKey }),
+  };
+}
+
+/**
+ * Send file-key-backed message (ordinary file or MP4 media).
+ */
+export async function sendFile(receiveId, fileKey, receiveIdType = 'chat_id', msgType = 'file') {
   const client = getClient();
 
   try {
     const res = await client.im.message.create({
       params: { receive_id_type: receiveIdType },
-      data: {
-        receive_id: receiveId,
-        msg_type: 'file',
-        content: JSON.stringify({ file_key: fileKey }),
-      },
+      data: buildFileMessagePayload(receiveId, fileKey, msgType),
     });
 
     if (res.code === 0) {

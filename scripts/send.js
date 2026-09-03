@@ -6,6 +6,7 @@
  *   ./send.js <endpoint_id> "message text"
  *   ./send.js <endpoint_id> "[MEDIA:image]/path/to/image.png"
  *   ./send.js <endpoint_id> "[MEDIA:file]/path/to/document.pdf"
+ *   ./send.js <endpoint_id> "[MEDIA:video]/path/to/video.mp4"
  *
  * Exit codes:
  *   0 - Success
@@ -20,7 +21,8 @@ dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 import { getConfig, DATA_DIR } from '../src/lib/config.js';
 import { chooseReplyTarget } from '../src/lib/reply-target.js';
 import { convertAtMentionsForCard } from '../src/lib/at-mention.js';
-import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
+import { sendToGroup, sendMessage, uploadImage, sendImage, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
+import { sendFileMediaThreadAware } from '../src/lib/file-media.js';
 
 const TYPING_DIR = path.join(DATA_DIR, 'typing');
 
@@ -32,6 +34,7 @@ if (args.length < 2) {
   console.error('Usage: send.js <endpoint_id> <message>');
   console.error('       send.js <endpoint_id> "[MEDIA:image]/path/to/image.png"');
   console.error('       send.js <endpoint_id> "[MEDIA:file]/path/to/file.pdf"');
+  console.error('       send.js <endpoint_id> "[MEDIA:video]/path/to/video.mp4"');
   process.exit(1);
 }
 
@@ -295,7 +298,7 @@ async function sendPlainTextChunk(endpoint, chunk, isFirstChunk) {
 }
 
 /**
- * Send media (image or file).
+ * Send media (image, file, or video).
  * Thread-aware: in topic threads, reply to parent||root to stay in topic.
  */
 async function sendMedia(type, filePath) {
@@ -312,11 +315,11 @@ async function sendMedia(type, filePath) {
     if (replyTarget) {
       try {
         const result = await replyToMessage(replyTarget, JSON.stringify({ image_key: uploadResult.imageKey }), 'image');
-        if (result.success) return;
+        if (result.success) return '[sent image]';
         console.log('[feishu] Image reply failed, falling back to sendImage:', result.message);
         if (parent && root && parent !== root) {
           const rootReply = await replyToMessage(root, JSON.stringify({ image_key: uploadResult.imageKey }), 'image');
-          if (rootReply.success) return;
+          if (rootReply.success) return '[sent image]';
           console.log('[feishu] Image root reply fallback failed, falling back to sendImage:', rootReply.message);
         }
       } catch (err) {
@@ -324,7 +327,7 @@ async function sendMedia(type, filePath) {
         if (parent && root && parent !== root) {
           try {
             const rootReply = await replyToMessage(root, JSON.stringify({ image_key: uploadResult.imageKey }), 'image');
-            if (rootReply.success) return;
+            if (rootReply.success) return '[sent image]';
           } catch {}
         }
       }
@@ -333,38 +336,11 @@ async function sendMedia(type, filePath) {
     if (!sendResult.success) {
       throw new Error(`Failed to send image: ${sendResult.message}`);
     }
-  } else if (type === 'file') {
-    const uploadResult = await uploadFile(trimmedPath);
-    if (!uploadResult.success) {
-      throw new Error(`Failed to upload file: ${uploadResult.message}`);
-    }
-    if (replyTarget) {
-      try {
-        const result = await replyToMessage(replyTarget, JSON.stringify({ file_key: uploadResult.fileKey }), 'file');
-        if (result.success) return;
-        console.log('[feishu] File reply failed, falling back to sendFile:', result.message);
-        if (parent && root && parent !== root) {
-          const rootReply = await replyToMessage(root, JSON.stringify({ file_key: uploadResult.fileKey }), 'file');
-          if (rootReply.success) return;
-          console.log('[feishu] File root reply fallback failed, falling back to sendFile:', rootReply.message);
-        }
-      } catch (err) {
-        console.log('[feishu] File reply threw, falling back:', err.message);
-        if (parent && root && parent !== root) {
-          try {
-            const rootReply = await replyToMessage(root, JSON.stringify({ file_key: uploadResult.fileKey }), 'file');
-            if (rootReply.success) return;
-          } catch {}
-        }
-      }
-    }
-    const sendResult = await sendFile(chatId, uploadResult.fileKey);
-    if (!sendResult.success) {
-      throw new Error(`Failed to send file: ${sendResult.message}`);
-    }
-  } else {
-    throw new Error(`Unsupported media type: ${type}`);
+    return '[sent image]';
   }
+
+  const result = await sendFileMediaThreadAware({ endpoint: parsedEndpoint, type, filePath: trimmedPath });
+  return result.recordLabel;
 }
 
 /**
@@ -428,8 +404,8 @@ async function send() {
   try {
     if (mediaMatch) {
       const [, mediaType, mediaPath] = mediaMatch;
-      await sendMedia(mediaType, mediaPath);
-      await recordOutgoing(mediaType === 'image' ? '[sent image]' : '[sent file]');
+      const recordLabel = await sendMedia(mediaType, mediaPath);
+      await recordOutgoing(recordLabel);
     } else {
       await sendText(endpointId, message);
       await recordOutgoing(message);

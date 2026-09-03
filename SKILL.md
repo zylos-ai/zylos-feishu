@@ -178,9 +178,16 @@ EOF
 cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "feishu" "<chat_id>"
 [MEDIA:file]/path/to/file.pdf
 EOF
+
+# Send MP4 video as inline-playable media
+cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "feishu" "<chat_id>"
+[MEDIA:video]/path/to/video.mp4
+EOF
 ```
 
 > ⚠️ `[MEDIA:...]` must be the only content in the message. Send text and media as separate calls.
+> An `.mp4` sent with `[MEDIA:file]` is also delivered as inline video media;
+> other file types remain ordinary attachments.
 
 Direct send (bypasses C4 logging, for testing only):
 ```bash
